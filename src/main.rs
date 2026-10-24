@@ -188,14 +188,19 @@ fn tpv_to_location(v: &serde_json::Value) -> Option<GnssLocation> {
     Some(loc)
 }
 
+// A longer gap between two returns from read_line means that this thread was
+// not reading: the container was frozen, the host was suspended, or a
+// callback was slow. Reports may have queued in the socket meanwhile, and
+// Android must not receive them as current. With the 1 s read timeout,
+// normal gaps are about 1 s or less.
+const STALE_GAP_NS: i64 = 3_000_000_000;
+
 fn worker(callback: Callback, session: Arc<AtomicU64>, me: u64) {
     let current = || session.load(Ordering::SeqCst) == me;
     let cb = || callback.lock().unwrap().clone();
-    if let Some(c) = cb() {
-        let _ = c.gnssStatusCb(GnssStatusValue::SESSION_BEGIN);
-    }
     let (mut svs_sent, mut locs_sent) = (0u64, 0u64);
     while current() {
+        let mut stale = false;
         // gpsd's own default. Numeric, not "localhost": only the first
         // resolved address is tried, and that could be ::1.
         let host = getprop("service.gpsd.host", "127.0.0.1");
@@ -220,14 +225,30 @@ fn worker(callback: Callback, session: Arc<AtomicU64>, me: u64) {
                 let _ = s.write_all(b"?WATCH={\"enable\":true,\"json\":true};\n");
                 let mut r = BufReader::new(s);
                 let mut line = String::new();
+                let mut last_read = boottime_ns();
                 while current() {
-                    line.clear();
-                    match r.read_line(&mut line) {
+                    let result = r.read_line(&mut line);
+                    let now = boottime_ns();
+                    if now - last_read > STALE_GAP_NS {
+                        // Closing the connection discards everything queued
+                        // for it. gpsd answers a new WATCH with no stored
+                        // reports, so all that follows is new.
+                        log!(
+                            "session {me}: no read for {} ms; reconnecting to discard queued reports",
+                            (now - last_read) / 1_000_000
+                        );
+                        stale = true;
+                        break;
+                    }
+                    last_read = now;
+                    match result {
                         Ok(0) => {
                             log!("session {me}: gpsd closed the connection");
                             break;
                         }
                         Ok(_) => {}
+                        // A timeout keeps any partial line in `line`; the
+                        // next read_line appends the rest.
                         Err(e)
                             if matches!(
                                 e.kind(),
@@ -241,7 +262,13 @@ fn worker(callback: Callback, session: Arc<AtomicU64>, me: u64) {
                             break;
                         }
                     }
-                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    // stop() may have been called while read_line waited.
+                    if !current() {
+                        break;
+                    }
+                    let parsed = serde_json::from_str::<serde_json::Value>(&line);
+                    line.clear();
+                    let Ok(v) = parsed else {
                         continue;
                     };
                     let Some(c) = cb() else { continue };
@@ -279,18 +306,32 @@ fn worker(callback: Callback, session: Arc<AtomicU64>, me: u64) {
                 }
             }
         }
-        // Pause before reconnecting, checking for stop() every 200 ms.
+        // Pause before reconnecting, checking for stop() every 200 ms. After a
+        // stale gap, reconnect at once.
         for _ in 0..10 {
-            if !current() {
+            if stale || !current() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(200));
         }
     }
-    if let Some(c) = cb() {
-        let _ = c.gnssStatusCb(GnssStatusValue::SESSION_END);
-    }
     log!("session {me} ended ({svs_sent} satellite lists, {locs_sent} locations)");
+}
+
+impl Gnss {
+    // Session status is sent from start() and stop(), not from the worker, so
+    // that it reaches Android in the order of those calls. A worker that has
+    // not yet noticed a stop() could otherwise send "session end" after the
+    // next start() had sent "session begin".
+    fn send_status(&self, status: GnssStatusValue) {
+        // Clone first, so that the lock is not held during the binder call.
+        let cb = self.callback.lock().unwrap().clone();
+        if let Some(c) = cb {
+            if let Err(e) = c.gnssStatusCb(status) {
+                log!("gnssStatusCb failed: {e:?}");
+            }
+        }
+    }
 }
 
 impl Interface for Gnss {}
@@ -299,11 +340,17 @@ impl IGnss for Gnss {
     fn setCallback(&self, callback: &Strong<dyn IGnssCallback>) -> BinderResult<()> {
         log!("setCallback");
         *self.callback.lock().unwrap() = Some(callback.clone());
-        callback.gnssSetCapabilitiesCb(0)?;
-        callback.gnssSetSystemInfoCb(&GnssSystemInfo {
+        // Android ignores the result of setCallback, so a failed call is
+        // logged and the next one is still made.
+        if let Err(e) = callback.gnssSetCapabilitiesCb(0) {
+            log!("gnssSetCapabilitiesCb failed: {e:?}");
+        }
+        if let Err(e) = callback.gnssSetSystemInfoCb(&GnssSystemInfo {
             yearOfHw: 2026,
             name: "gpsd-binder".into(),
-        })?;
+        }) {
+            log!("gnssSetSystemInfoCb failed: {e:?}");
+        }
         Ok(())
     }
     fn close(&self) -> BinderResult<()> {
@@ -315,6 +362,7 @@ impl IGnss for Gnss {
     fn start(&self) -> BinderResult<()> {
         let me = self.session.fetch_add(1, Ordering::SeqCst) + 1;
         log!("start (session {me})");
+        self.send_status(GnssStatusValue::SESSION_BEGIN);
         let (cb, s) = (self.callback.clone(), self.session.clone());
         std::thread::spawn(move || worker(cb, s, me));
         Ok(())
@@ -322,6 +370,7 @@ impl IGnss for Gnss {
     fn stop(&self) -> BinderResult<()> {
         log!("stop");
         self.session.fetch_add(1, Ordering::SeqCst);
+        self.send_status(GnssStatusValue::SESSION_END);
         Ok(())
     }
     fn setPositionMode(&self, o: &PositionModeOptions) -> BinderResult<()> {

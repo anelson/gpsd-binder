@@ -1,0 +1,70 @@
+# /etc/systemd/system/gpsd-waydroid-forward.service
+#
+# Makes the host gpsd reachable from the Waydroid container at
+# 192.168.240.1:2947 without changing gpsd.socket or gpsd.service.
+# socat accepts on the bridge address and forwards each connection to the
+# existing loopback socket 127.0.0.1:2947 (which socket-activates gpsd).
+# The gpsd-binder driver inside Android connects here.
+#
+# so-bindtodevice=waydroid0  Only packets that arrive on the Waydroid bridge
+#                            reach this listener. Without it, a host on
+#                            another network, such as Wi-Fi, could reach
+#                            192.168.240.1:2947 (Linux accepts packets for any
+#                            local address on any interface, and Fedora
+#                            Workstation's default firewall zone accepts TCP
+#                            1025-65535).
+# freebind                   Bind even if 192.168.240.1 is not yet on the bridge
+#                            when the bridge device appears.
+# max-children=8             Limit the number of concurrent forwarded sessions.
+# retry=10,interval=1        If 127.0.0.1:2947 refuses (gpsd.socket stopped),
+#                            the forwarding child retries once a second for
+#                            10 s before it closes the driver's connection.
+#                            gpsd-binder pauses 2 s before it reconnects, but
+#                            a driver that reconnects at once (the earlier C++
+#                            driver did) would otherwise loop about 600 times
+#                            a second, a quarter of a CPU core, for as long as
+#                            gpsd is unreachable.
+# IPAddressAllow/Deny        Second fence (cgroup BPF): the unit may exchange
+#                            packets only with the bridge subnet and loopback.
+# ExecStartPre (modprobe)    Inside Android, a filter rule lets only uid 0 (the
+#                            driver) connect here; see gpsd-access-guard.sh in
+#                            the vendor overlay. That rule needs the legacy
+#                            iptables modules, and Android cannot load them
+#                            itself. They are loaded here, as root ("+"),
+#                            before the listener starts. If they cannot be
+#                            loaded, the forwarder does not start, so the
+#                            container never gets gpsd without the rule being
+#                            possible.
+#
+# Starts when waydroid0 appears (WantedBy=), stops when it goes (BindsTo=).
+# Install: copy to /etc/systemd/system/, then run
+#   systemctl daemon-reload
+#   systemctl enable gpsd-waydroid-forward.service
+# It starts the next time Waydroid creates the bridge.
+
+[Unit]
+Description=Forward gpsd to the Waydroid bridge (192.168.240.1:2947)
+Documentation=man:gpsd(8) man:socat(1)
+BindsTo=sys-subsystem-net-devices-waydroid0.device
+After=sys-subsystem-net-devices-waydroid0.device gpsd.socket
+Wants=gpsd.socket
+
+[Service]
+ExecStartPre=+/usr/sbin/modprobe -a ip_tables iptable_filter xt_owner ipt_REJECT
+ExecStart=/usr/bin/socat -d -d TCP-LISTEN:2947,bind=192.168.240.1,so-bindtodevice=waydroid0,freebind,reuseaddr,fork,max-children=8 TCP:127.0.0.1:2947,retry=10,interval=1
+Restart=on-failure
+RestartSec=2
+# socat exits with 128+15 when systemd stops it with SIGTERM; that is a clean stop.
+SuccessExitStatus=143
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressAllow=192.168.240.0/24 localhost
+IPAddressDeny=any
+
+[Install]
+WantedBy=sys-subsystem-net-devices-waydroid0.device

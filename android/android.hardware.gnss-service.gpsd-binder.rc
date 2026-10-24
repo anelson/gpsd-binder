@@ -1,0 +1,18 @@
+# gpsd-binder: AIDL android.hardware.gnss (version 2) driver backed by gpsd.
+# Install as /vendor/etc/init/android.hardware.gnss-service.gpsd-binder.rc.
+#
+# The driver connects to gpsd at service.gpsd.host:service.gpsd.port and reads
+# both properties each time Android starts a GNSS session. If they are not
+# set, it uses 127.0.0.1:2947, gpsd's own default. To use another address, set
+# the properties from a separate init file, as waydroid/gpsd-binder-waydroid.rc
+# does.
+#
+# The driver runs as root because the Waydroid access guard
+# (waydroid/gpsd-access-guard.sh) lets only uid 0 connect to gpsd. Running it
+# as an unprivileged user is planned.
+
+service vendor.gnss-gpsd-binder /vendor/bin/hw/android.hardware.gnss-service.gpsd-binder
+    class hal
+    user root
+    group system gps
+    stdio_to_kmsg

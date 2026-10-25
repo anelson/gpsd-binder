@@ -1,5 +1,5 @@
-//! One TCP connection to gpsd: the WATCH request on the way in, reports read one line at a time on
-//! the way out.
+//! One TCP connection to gpsd: the WATCH request on the way in, reports and NMEA sentences read one
+//! line at a time on the way out.
 
 use std::{
     fmt,
@@ -13,6 +13,15 @@ use super::protocol::{Report, RequestTooLong, Version, Watch, MIN_PROTO_MAJOR};
 /// Longest line accepted. gpsd truncates its own responses at 10240 bytes, so a longer line does
 /// not come from gpsd.
 pub(crate) const MAX_LINE_LEN: usize = 64 * 1024;
+
+/// One line from gpsd.
+#[derive(Debug)]
+pub(crate) enum Line {
+    /// A JSON report in the gpsd format.
+    Json(Report),
+    /// An NMEA sentence, as gpsd sent it, line ending included.
+    Nmea(String),
+}
 
 pub(crate) struct Connection {
     reader: BufReader<TcpStream>,
@@ -52,7 +61,8 @@ pub(crate) enum ReadError {
     /// gpsd closed the connection.
     Closed,
     Io(io::Error),
-    /// A complete line that is not a JSON report. The connection is still usable.
+    /// A complete line that is neither a JSON report nor an NMEA sentence. The connection is still
+    /// usable.
     Parse {
         line: String,
         error: serde_json::Error,
@@ -106,19 +116,23 @@ impl Connection {
         self.peer
     }
 
-    /// The next report. Blank lines are skipped. A VERSION report with a protocol major version
+    /// The next report or NMEA sentence. Blank lines are skipped. A line that begins with `$` is an
+    /// NMEA sentence, and is not checked further. A VERSION report with a protocol major version
     /// below [`MIN_PROTO_MAJOR`] is an error.
-    pub(crate) fn read(&mut self) -> Result<Report, ReadError> {
+    pub(crate) fn read(&mut self) -> Result<Line, ReadError> {
         loop {
             let line = self.read_line()?;
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
+            if line.first() == Some(&b'$') {
+                return Ok(Line::Nmea(String::from_utf8_lossy(&line).into_owned()));
+            }
             return match serde_json::from_slice::<Report>(&line) {
                 Ok(Report::Version(v)) if v.proto_major < MIN_PROTO_MAJOR => {
                     Err(ReadError::UnsupportedProtocol(v))
                 }
-                Ok(report) => Ok(report),
+                Ok(report) => Ok(Line::Json(report)),
                 Err(error) => Err(ReadError::Parse {
                     line: String::from_utf8_lossy(&line).trim_end().to_owned(),
                     error,
@@ -171,7 +185,7 @@ mod tests {
     }
 
     /// Reads past timeouts until something else happens.
-    fn read(conn: &mut Connection) -> Result<Report, ReadError> {
+    fn read(conn: &mut Connection) -> Result<Line, ReadError> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match conn.read() {
@@ -193,13 +207,13 @@ mod tests {
         ]]);
         let mut conn = connect(&fake, &Watch::default());
         assert_eq!(conn.peer(), fake.addr);
-        assert!(matches!(read(&mut conn), Ok(Report::Version(v)) if v.release == "3.25"));
-        assert!(matches!(read(&mut conn), Ok(Report::Devices(d)) if d.devices.len() == 1));
-        assert!(matches!(read(&mut conn), Ok(Report::Watch(w)) if w.enable && w.json));
-        assert!(matches!(read(&mut conn), Ok(Report::Tpv(t)) if t.mode == Mode::Fix3d));
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Version(v))) if v.release == "3.25"));
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Devices(d))) if d.devices.len() == 1));
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Watch(w))) if w.enable && w.json));
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Tpv(t))) if t.mode == Mode::Fix3d));
         assert_eq!(
             fake.requests(),
-            vec!["?WATCH={\"enable\":true,\"json\":true};\n".to_owned()]
+            vec!["?WATCH={\"enable\":true,\"json\":true,\"nmea\":true};\n".to_owned()]
         );
     }
 
@@ -215,7 +229,7 @@ mod tests {
             Step::WaitForClose,
         ]]);
         let mut conn = connect(&fake, &Watch::default());
-        assert!(matches!(conn.read(), Ok(Report::Version(_))));
+        assert!(matches!(conn.read(), Ok(Line::Json(Report::Version(_)))));
         let mut timeouts = 0;
         let report = loop {
             match conn.read() {
@@ -225,10 +239,25 @@ mod tests {
             assert!(timeouts < 50, "the second half never arrived");
         };
         assert!(timeouts >= 1, "the first half should have arrived alone");
-        let Ok(Report::Tpv(tpv)) = report else {
+        let Ok(Line::Json(Report::Tpv(tpv))) = report else {
             panic!("expected the whole TPV, got {report:?}")
         };
         assert_eq!((tpv.lat, tpv.eph), (Some(44.069009667), Some(17.29)));
+    }
+
+    #[test]
+    fn nmea_sentences_are_passed_on_as_sent() {
+        let fake = FakeGpsd::start(vec![vec![
+            line(VERSION),
+            Step::ExpectRequest("?WATCH="),
+            Step::Send(format!("{GGA}\r\n")),
+            line(TPV_3D),
+            Step::WaitForClose,
+        ]]);
+        let mut conn = connect(&fake, &Watch::default());
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Version(_)))));
+        assert!(matches!(read(&mut conn), Ok(Line::Nmea(s)) if s == format!("{GGA}\r\n")));
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Tpv(_)))));
     }
 
     #[test]
@@ -243,13 +272,13 @@ mod tests {
             Step::WaitForClose,
         ]]);
         let mut conn = connect(&fake, &Watch::default());
-        assert!(matches!(read(&mut conn), Ok(Report::Version(_))));
-        assert!(matches!(read(&mut conn), Ok(Report::Unknown)));
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Version(_)))));
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Unknown))));
         assert!(matches!(
             read(&mut conn),
             Err(ReadError::Parse { line, .. }) if line == "{this is not json"
         ));
-        assert!(matches!(read(&mut conn), Ok(Report::Tpv(t)) if t.mode == Mode::NoFix));
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Tpv(t))) if t.mode == Mode::NoFix));
     }
 
     #[test]
@@ -261,7 +290,7 @@ mod tests {
             Step::Close,
         ]]);
         let mut conn = connect(&fake, &Watch::default());
-        assert!(matches!(read(&mut conn), Ok(Report::Version(_))));
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Version(_)))));
         // The unfinished line is discarded with the connection.
         assert!(matches!(read(&mut conn), Err(ReadError::Closed)));
         assert!(matches!(read(&mut conn), Err(ReadError::Closed)));
@@ -276,7 +305,7 @@ mod tests {
             Step::WaitForClose,
         ]]);
         let mut conn = connect(&fake, &Watch::default());
-        assert!(matches!(read(&mut conn), Ok(Report::Version(_))));
+        assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Version(_)))));
         assert!(matches!(read(&mut conn), Err(ReadError::LineTooLong)));
     }
 

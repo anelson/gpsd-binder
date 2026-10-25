@@ -6,8 +6,8 @@
 //!
 //! The driver registers `android.hardware.gnss.IGnss/default` with servicemanager. When Android
 //! starts a GNSS session it connects to gpsd (`service.gpsd.host` and `service.gpsd.port`, default
-//! 127.0.0.1:2947) and passes gpsd's satellite lists (SKY) and fixes (TPV) to Android through
-//! `IGnssCallback`.
+//! 127.0.0.1:2947) and passes gpsd's satellite lists (SKY), fixes (TPV) and, while an app listens
+//! for them, NMEA sentences to Android through `IGnssCallback`.
 //!
 //! [`hal`] is the Android side: the `IGnss` service, its sessions and the mapping from gpsd's
 //! reports to the AIDL types. [`gpsd`] is the client for gpsd's JSON protocol and knows nothing

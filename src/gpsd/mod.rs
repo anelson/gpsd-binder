@@ -3,11 +3,6 @@
 //! [`protocol`] holds the report and request types, [`connection`] one connection to gpsd, and
 //! [`feed`] the reconnecting loop that the driver runs on a thread. Nothing here knows about
 //! Android.
-//!
-//! Behaviour relied on, verified in gpsd 3.27.5 and `gpsd_json(5)`: gpsd sends a VERSION banner on
-//! connect; it answers `?WATCH` with the device list and the watch settings, never with stored
-//! reports; closing the connection ends the watch; request lines are at most 80 characters; when a
-//! client's socket is full, gpsd drops reports and then the client.
 
 mod connection;
 mod feed;
@@ -41,7 +36,7 @@ mod tests {
     };
 
     use super::{
-        connection::{Connection, ReadError},
+        connection::{Connection, Line, ReadError},
         protocol::MIN_PROTO_MAJOR,
         *,
     };
@@ -186,9 +181,15 @@ mod tests {
             move || stop_flag.load(Ordering::SeqCst),
             move || started.elapsed(),
         );
-        let (mut version, mut devices, mut watch, mut fix, mut sky) = (None, None, None, None, None);
+        let (mut version, mut devices, mut watch, mut fix, mut sky, mut gga) =
+            (None, None, None, None, None, None);
         while Instant::now() < deadline
-            && (version.is_none() || devices.is_none() || watch.is_none() || fix.is_none() || sky.is_none())
+            && (version.is_none()
+                || devices.is_none()
+                || watch.is_none()
+                || fix.is_none()
+                || sky.is_none()
+                || gga.is_none())
         {
             match feed.next().expect("the feed ended") {
                 Event::Connected { version: v, .. } => version = Some(v),
@@ -204,7 +205,9 @@ mod tests {
                 Event::Report(Report::Sky(s)) if s.satellites.as_ref().is_some_and(|v| !v.is_empty()) => {
                     sky = Some(s);
                 }
-                Event::Report(_) => {}
+                // gpsd passes the recording's own sentences on.
+                Event::Nmea(s) if s.starts_with("$GNGGA,") => gga = Some(s),
+                Event::Report(_) | Event::Nmea(_) => {}
                 other => panic!("unexpected event: {other:?}"),
             }
         }
@@ -232,6 +235,8 @@ mod tests {
                 .any(|s| s.gnssid == Some(GnssId::Gps) && s.svid.is_some()),
             "{sats:?}"
         );
+        let gga = gga.expect("no GGA sentence");
+        assert!(gga.ends_with("\r\n"), "{gga:?}");
 
         // A watch on the one device by name: gpsd echoes the name and reports keep coming.
         let one_device = Watch {
@@ -276,7 +281,7 @@ mod tests {
     fn read_until(conn: &mut Connection, deadline: Instant, wanted: fn(&Report) -> bool) -> Report {
         while Instant::now() < deadline {
             match conn.read() {
-                Ok(report) if wanted(&report) => return report,
+                Ok(Line::Json(report)) if wanted(&report) => return report,
                 Ok(_) | Err(ReadError::Timeout) => {}
                 Err(e) => panic!("read failed: {e}"),
             }

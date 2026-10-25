@@ -1,10 +1,10 @@
-//! The reconnecting read loop: connects to gpsd, hands out reports, and connects again when the
-//! connection fails or goes stale.
+//! The reconnecting read loop: connects to gpsd, hands out reports and NMEA sentences, and connects
+//! again when the connection fails or goes stale.
 
 use std::{fmt, io, net::SocketAddr, thread, time::Duration};
 
 use super::{
-    connection::{ConnectError, Connection, ReadError},
+    connection::{ConnectError, Connection, Line, ReadError},
     protocol::{Report, Version, Watch},
 };
 
@@ -47,6 +47,8 @@ pub(crate) enum Event {
         version: Version,
     },
     Report(Report),
+    /// An NMEA sentence, line ending included.
+    Nmea(String),
     /// The address closure gave no address. The feed pauses and asks again.
     NoAddress,
     /// A connection attempt failed. The feed pauses and tries again.
@@ -172,13 +174,16 @@ impl Open {
             pause: true,
         };
         match result {
-            Ok(Report::Version(version)) if !self.banner_seen => {
+            Ok(Line::Json(Report::Version(version))) if !self.banner_seen => {
                 self.banner_seen = true;
                 Step::Emit(Event::Connected { addr, version })
             }
             Ok(_) if !self.banner_seen => fail(Disconnect::NoVersion),
-            Ok(Report::Watch(echo)) if !(echo.enable && echo.json) => fail(Disconnect::WatchRefused(echo)),
-            Ok(report) => Step::Emit(Event::Report(report)),
+            Ok(Line::Json(Report::Watch(echo))) if !(echo.enable && echo.json) => {
+                fail(Disconnect::WatchRefused(echo))
+            }
+            Ok(Line::Json(report)) => Step::Emit(Event::Report(report)),
+            Ok(Line::Nmea(sentence)) => Step::Emit(Event::Nmea(sentence)),
             Err(ReadError::Timeout) => Step::Continue,
             Err(ReadError::Parse { line, error }) => {
                 log::warn!("gpsd sent a line that is not a report ({error}): {line}");

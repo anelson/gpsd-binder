@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- NMEA sentences. The driver asks gpsd for NMEA as well as JSON, and passes
+  each sentence to Android unchanged while an app listens for NMEA.
+
 ## [0.1.0] - 2026-10-25
 
 ### Added

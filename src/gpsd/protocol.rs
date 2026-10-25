@@ -74,17 +74,22 @@ pub(crate) struct Watch {
     pub(crate) enable: bool,
     #[serde(default)]
     pub(crate) json: bool,
+    /// NMEA sentences as well, each on a line of its own, as received or as gpsd builds them from
+    /// a binary protocol.
+    #[serde(default)]
+    pub(crate) nmea: bool,
     /// Watch only this device; otherwise every device gpsd has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) device: Option<String>,
 }
 
 impl Default for Watch {
-    /// Every device, JSON reports.
+    /// Every device, JSON reports and NMEA sentences.
     fn default() -> Watch {
         Watch {
             enable: true,
             json: true,
+            nmea: true,
             device: None,
         }
     }
@@ -256,7 +261,7 @@ pub(crate) mod samples {
         r#""flags":1,"native":1,"bps":9600,"parity":"N","stopbits":1,"cycle":1.00,"mincycle":0.25}"#
     );
     pub(crate) const WATCH: &str = concat!(
-        r#"{"class":"WATCH","enable":true,"json":true,"nmea":false,"raw":0,"scaled":false,"#,
+        r#"{"class":"WATCH","enable":true,"json":true,"nmea":true,"raw":0,"scaled":false,"#,
         r#""timing":false,"split24":false,"pps":false}"#
     );
     pub(crate) const WATCH_REFUSED: &str = concat!(
@@ -290,6 +295,10 @@ pub(crate) mod samples {
     pub(crate) const SKY_DOPS_ONLY: &str =
         r#"{"class":"SKY","device":"/dev/pts/1","hdop":0.91,"pdop":1.56,"vdop":1.27,"uSat":12}"#;
     pub(crate) const ERROR: &str = r#"{"class":"ERROR","message":"No such device as /dev/pts/0"}"#;
+    /// An NMEA sentence from the recording that the container test replays, without its line
+    /// ending.
+    pub(crate) const GGA: &str =
+        "$GNGGA,171926.00,4404.14063,N,12118.85478,W,1,12,0.91,1147.2,M,-21.3,M,,*44";
     pub(crate) const TOFF: &str = concat!(
         r#"{"class":"TOFF","device":"/dev/pts/1","real_sec":1567164286,"real_nsec":0,"#,
         r#""clock_sec":1567164286,"clock_nsec":241446000}"#
@@ -434,7 +443,7 @@ mod tests {
     fn watch_request() {
         assert_eq!(
             Watch::default().request().unwrap(),
-            "?WATCH={\"enable\":true,\"json\":true};\n"
+            "?WATCH={\"enable\":true,\"json\":true,\"nmea\":true};\n"
         );
         let one_device = Watch {
             device: Some("/dev/ttyACM0".to_string()),
@@ -442,7 +451,7 @@ mod tests {
         };
         assert_eq!(
             one_device.request().unwrap(),
-            "?WATCH={\"enable\":true,\"json\":true,\"device\":\"/dev/ttyACM0\"};\n"
+            "?WATCH={\"enable\":true,\"json\":true,\"nmea\":true,\"device\":\"/dev/ttyACM0\"};\n"
         );
         let long_path = Watch {
             device: Some(format!("/dev/serial/by-id/{}", "x".repeat(60))),

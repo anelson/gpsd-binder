@@ -2,19 +2,21 @@
 //! mapping from gpsd's reports to the AIDL types.
 //!
 //! Each `start()` begins a new numbered session. A thread runs the gpsd feed while its number is
-//! current, so `stop()` and a later `start()` never overlap. Every optional extension answers
-//! "unsupported operation", which Android records as absent.
+//! current, so `stop()` and a later `start()` never overlap. gpsd's NMEA sentences are passed on
+//! unchanged between `startNmea()` and `stopNmea()`. Every optional extension answers "unsupported
+//! operation", which Android records as absent.
 
 use std::{
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard, PoisonError,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
+use chrono::{DateTime, Utc};
 use rsbinder::*;
 
 use crate::gpsd::{self, Event, GnssId, Report, Satellite, Tpv};
@@ -78,6 +80,10 @@ struct Gnss {
     /// Bumped by every `start()`, `stop()` and `close()`. A session thread runs only while its
     /// number is current, so `stop()` and a later `start()` never overlap.
     session: Arc<AtomicU64>,
+    /// Set by `startNmea()` and cleared by `stopNmea()`. Android calls them when the first app
+    /// starts to listen for NMEA and when the last one stops, with or without a session, so the
+    /// setting holds across sessions.
+    nmea: Arc<AtomicBool>,
     address: AddressFn,
     clock: ClockFn,
 }
@@ -87,6 +93,7 @@ pub(crate) fn new_service(address: AddressFn, clock: ClockFn) -> Strong<dyn IGns
     BnGnss::new_binder(Gnss {
         callback: Callback::default(),
         session: Arc::new(AtomicU64::new(0)),
+        nmea: Arc::new(AtomicBool::new(false)),
         address,
         clock,
     })
@@ -182,6 +189,7 @@ impl GnssLocation {
 struct Session {
     number: u64,
     current_session: Arc<AtomicU64>,
+    nmea: Arc<AtomicBool>,
     callback: Callback,
     clock: ClockFn,
 }
@@ -204,7 +212,7 @@ impl Session {
             stop,
             self.clock,
         );
-        let (mut svs_sent, mut locs_sent) = (0u64, 0u64);
+        let (mut svs_sent, mut locs_sent, mut nmea_sent) = (0u64, 0u64, 0u64);
         for event in feed {
             // stop() may have been called while the feed waited for this event.
             if !self.current() {
@@ -251,6 +259,19 @@ impl Session {
                         }
                     }
                 }
+                // Only between startNmea() and stopNmea(): Android 13 checks for listeners only for a
+                // version 1 driver.
+                Event::Nmea(sentence) => {
+                    if self.nmea.load(Ordering::SeqCst) {
+                        let timestamp = DateTime::<Utc>::from(SystemTime::now()).timestamp_millis();
+                        if self.send("gnssNmeaCb", |c| c.gnssNmeaCb(timestamp, &sentence)) {
+                            nmea_sent += 1;
+                            if nmea_sent == 1 {
+                                log::info!("session {me}: sent NMEA sentence #1 {}", sentence.trim_end());
+                            }
+                        }
+                    }
+                }
                 Event::Report(Report::Error(e)) => log::warn!("session {me}: gpsd: {}", e.message),
                 // The address function logs a bad setting itself.
                 Event::NoAddress
@@ -259,7 +280,10 @@ impl Session {
                 ) => {}
             }
         }
-        log::info!("session {me} ended ({svs_sent} satellite lists, {locs_sent} locations)");
+        log::info!(
+            "session {me} ended ({svs_sent} satellite lists, {locs_sent} locations, {nmea_sent} NMEA \
+             sentences)"
+        );
     }
 
     /// One call on the callback. False if there is no callback or the call failed.
@@ -324,6 +348,7 @@ impl IGnss for Gnss {
         let session = Session {
             number,
             current_session: Arc::clone(&self.session),
+            nmea: Arc::clone(&self.nmea),
             callback: self.callback.clone(),
             clock: self.clock,
         };
@@ -371,10 +396,14 @@ impl IGnss for Gnss {
     }
 
     fn startNmea(&self) -> BinderResult<()> {
+        log::info!("startNmea");
+        self.nmea.store(true, Ordering::SeqCst);
         Ok(())
     }
 
     fn stopNmea(&self) -> BinderResult<()> {
+        log::info!("stopNmea");
+        self.nmea.store(false, Ordering::SeqCst);
         Ok(())
     }
 

@@ -180,6 +180,19 @@ The relevant files are in `android_frameworks_base` under
 - `SESSION_BEGIN` produces `onStarted` for apps; `SESSION_END` or
   `ENGINE_OFF` produce `onStopped`; `ENGINE_ON` is ignored.
 - The framework drops deliveries that arrive faster than each app asked for.
+- NMEA: `GnssNmeaProvider` calls `startNmea()` when the first app NMEA
+  listener becomes active and `stopNmea()` when the last one stops being
+  active, before or after `start()`, and calls `startNmea()` again after the
+  driver dies. A listener stays active while its app is in the foreground or
+  runs a foreground service. ATAK runs one, so another app in front does not
+  stop NMEA; GPSTest has a listener while its screen is shown.
+- The JNI drops NMEA sentences while no app listens only for HIDL and AIDL
+  version 1 drivers. From a version 2 driver every `gnssNmeaCb()` goes up to
+  Java, so the driver sends sentences only between `startNmea()` and
+  `stopNmea()`.
+- The framework copies at most 120 bytes of each `gnssNmeaCb()` sentence
+  (`GnssNmeaProvider.mNmeaBuffer`). Apps get the timestamp unchanged, as
+  `OnNmeaMessageListener`'s Unix time in milliseconds.
 - Capability bits not to report: MSB, MSA, SINGLE_SHOT, ON_DEMAND_TIME (it
   starts time injection), LOW_POWER_MODE, and every bit that needs an
   extension (geofencing, measurements, navigation messages, satellite
@@ -238,6 +251,16 @@ Behaviour verified in gpsd 3.27.5's source (`gpsd/gpsd.c`,
   15 minutes. Request lines are limited to 80 characters.
 - When a client's socket is full, gpsd drops reports, and disconnects the
   client after a partial write.
+- With `"nmea":true` in the WATCH, gpsd sends NMEA sentences on the same
+  connection as the JSON: bare lines with no JSON around them, each ending in
+  CR LF as the JSON lines do, the sentences of a packet before the reports
+  made from it. Sentences from an NMEA receiver are copied as received. For a
+  binary receiver, such as the CF-20's u-blox, gpsd builds `$GP` sentences
+  itself (`gpsd/pseudonmea.c`): RMC, GSA and GSV without a fix, GGA and ZDA
+  only with one. Comment lines are not sent. Other text packets (AIS
+  `!AIVDM`, Garmin `@`) are copied too; the driver takes only lines that
+  begin with `$` as NMEA, so it logs each such line as one that is not a
+  report.
 - Without `-b` (read-only mode), any client can send commands that
   reconfigure the receiver. Anything that can connect can also read raw
   positions without Android's location permission.
@@ -391,6 +414,11 @@ credentials. Never write credentials into the repository. SSH is by password
   `WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` set. ATAK
   (`com.atakmap.app.civ`) needs one to seven minutes after a session start
   before it requests location; it shows its splash screen until then.
+- ATAK 5.8 registers an NMEA listener with its location request. When a
+  location has an altitude, ATAK replaces it with field 9 (height above sea
+  level) of the last `$GPGGA`, `$GNGGA` or `$GLGGA` sentence, converted to
+  height above the ellipsoid with EGM96. Without GGA sentences it shows no
+  altitude.
 - Success looks like this: servicemanager logs "Found
   android.hardware.gnss.IGnss/default in device VINTF manifest"; `lshal` shows
   no HIDL GNSS service and `service list` shows
@@ -407,7 +435,9 @@ credentials. Never write credentials into the repository. SSH is by password
   ATAK, switching the port property at run time, reconnecting to the real
   gpsd when the test forwarder goes away, recovery after an app force-stop,
   and recovery after the driver is killed with a request active. The build
-  installed on 2026-10-25 was linked with NDK r30.
+  installed on 2026-10-25 was linked with NDK r30. GPSTest received the
+  driver's NMEA sentences, and `startNmea()` and `stopNmea()` followed the
+  listeners of ATAK and GPSTest (2026-10-25, without a fix, so without GGA).
 - Not yet tested: a real sky fix, a long run, freeze and thaw, gpsd restarts,
   arm64, Android versions other than 13. The stale-gap logic is unit-tested
   with a fake clock but not exercised by a real freeze.

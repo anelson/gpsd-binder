@@ -45,3 +45,15 @@ Android in general and on Waydroid.
 
 - [`waydroid/`](waydroid/README.md): gpsd on a Linux host, Android in
   Waydroid.
+
+## Credits
+
+gpsd-binder was inspired by @bzobl/Bernd Zobl's
+[waydroid-gps](https://github.com/bzobl/waydroid-gps), which gives Android apps
+in Waydroid real positions from gpsd through a GNSS driver. That driver, on the
+[`waydroid-gps` branch of
+bzobl/gpsd](https://github.com/bzobl/gpsd/tree/waydroid-gps), makes the HIDL
+GNSS 1.1 driver that Adam Serbinski added to gpsd's
+[`android/`](https://gitlab.com/gpsd/gpsd/-/tree/master/android) directory in
+2019 work again. gpsd-binder is a separate implementation: an AIDL driver,
+written in Rust, that builds without an Android source tree.

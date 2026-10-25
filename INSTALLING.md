@@ -78,10 +78,10 @@ into a running system is not used until the next boot.
 The driver connects to gpsd at the address in two system properties, read each time Android starts
 a GNSS session:
 
-| Property            | Default     | Meaning                                            |
-| ------------------- | ----------- | -------------------------------------------------- |
-| `service.gpsd.host` | `127.0.0.1` | gpsd's IP address or host name, as Android sees it |
-| `service.gpsd.port` | `2947`      | gpsd's TCP port                                    |
+| Property           | Default     | Meaning                                            |
+| ------------------ | ----------- | -------------------------------------------------- |
+| `vendor.gpsd.host` | `127.0.0.1` | gpsd's IP address or host name, as Android sees it |
+| `vendor.gpsd.port` | `2947`      | gpsd's TCP port                                    |
 
 The defaults will work automatically when gpsd runs on the same system as Android. To use another address, add
 an init file of your own under `/vendor/etc/init/` that sets the properties before the driver
@@ -89,8 +89,8 @@ starts:
 
 ```
 on early-boot
-    setprop service.gpsd.host 192.168.240.1
-    setprop service.gpsd.port 2947
+    setprop vendor.gpsd.host 192.168.240.1
+    setprop vendor.gpsd.port 2947
 ```
 
 Changing a property on a running system takes effect at the driver's next connection, for example
@@ -151,8 +151,9 @@ Inside Android (`adb shell`, or `waydroid shell` on the host):
 - `dumpsys location` shows a `gps` provider. Once an app has asked for location, it shows the
   provider's request and, when gpsd has a fix, its last location. There is no mock or test
   provider.
-- An app such as GPSTest shows gpsd's satellites, with the same numbers, elevations and azimuths as
-  `cgps` on the gpsd side, and a fix when the receiver has one.
+- An app such as GPSTest shows gpsd's satellites, with the same numbers (except QZSS, which Android
+  numbers from 193), elevations and azimuths as `cgps` on the gpsd side, and a fix when the receiver
+  has one.
 
 If servicemanager does not find the driver, the VINTF fragment is missing or Android did not
 restart. If it finds the driver but apps get nothing, the kernel log shows what the driver

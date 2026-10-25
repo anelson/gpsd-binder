@@ -207,6 +207,11 @@ The relevant files are in `android_frameworks_base` under
   in `/system/lib64`, and the VNDK APEX has only
   `android.hardware.gnss-V2-ndk.so`. A program that needs only LLNDK
   libraries avoids this.
+- The driver's properties are `vendor.gpsd.host` and `vendor.gpsd.port`. A
+  vendor property needs the `vendor.` prefix to get a vendor SELinux label.
+  `ro.vendor.` properties cannot change once set and `persist.vendor.` ones
+  survive a reboot, while the driver reads the port at each connection and
+  the device tests change it at run time.
 
 ## rsbinder 0.12.0
 

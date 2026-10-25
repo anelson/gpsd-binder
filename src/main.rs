@@ -5,7 +5,7 @@
 //! 2026-10-24; see transfer.md. It is not yet a finished driver.
 //!
 //! The driver registers `android.hardware.gnss.IGnss/default` with servicemanager. When Android
-//! starts a GNSS session it connects to gpsd (`service.gpsd.host` and `service.gpsd.port`, default
+//! starts a GNSS session it connects to gpsd (`vendor.gpsd.host` and `vendor.gpsd.port`, default
 //! 127.0.0.1:2947) and passes gpsd's satellite lists (SKY), fixes (TPV) and, while an app listens
 //! for them, NMEA sentences to Android through `IGnssCallback`.
 //!
@@ -63,8 +63,8 @@ fn getprop(name: &str, default: &str) -> String {
 fn gpsd_address() -> Option<SocketAddr> {
     // gpsd's own default. Numeric, not "localhost": only the first resolved address is used, and that
     // could be ::1.
-    let host = getprop("service.gpsd.host", "127.0.0.1");
-    let port = getprop("service.gpsd.port", "2947");
+    let host = getprop("vendor.gpsd.host", "127.0.0.1");
+    let port = getprop("vendor.gpsd.port", "2947");
     let addr = format!("{host}:{port}")
         .to_socket_addrs()
         .ok()

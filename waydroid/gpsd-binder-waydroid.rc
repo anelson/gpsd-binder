@@ -5,8 +5,8 @@
 # (gpsd-waydroid-forward.service on the host). 192.168.240.1 is the host's
 # address on the bridge, from LXC_ADDR in Waydroid's waydroid-net.sh.
 on early-boot
-    setprop service.gpsd.host 192.168.240.1
-    setprop service.gpsd.port 2947
+    setprop vendor.gpsd.host 192.168.240.1
+    setprop vendor.gpsd.port 2947
 
 # Access guard: only uid 0 may open TCP to gpsd (see gpsd-access-guard.sh).
 # First at post-fs-data, before zygote starts any app; init waits for it.
@@ -16,8 +16,8 @@ on post-fs-data
 on property:sys.boot_completed=1 && property:init.svc.netd=running
     exec_background - root root -- /system/bin/sh /vendor/bin/gpsd-access-guard.sh boot-or-netd
 
-on property:sys.boot_completed=1 && property:service.gpsd.port=*
+on property:sys.boot_completed=1 && property:vendor.gpsd.port=*
     exec_background - root root -- /system/bin/sh /vendor/bin/gpsd-access-guard.sh port
 
-on property:sys.boot_completed=1 && property:service.gpsd.host=*
+on property:sys.boot_completed=1 && property:vendor.gpsd.host=*
     exec_background - root root -- /system/bin/sh /vendor/bin/gpsd-access-guard.sh host

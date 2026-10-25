@@ -16,7 +16,7 @@
 #                             rule is not kept in oem_out.
 #
 # Guarded destinations: 192.168.240.1:2947 always, and also
-# service.gpsd.host:service.gpsd.port when those properties name another IPv4
+# vendor.gpsd.host:vendor.gpsd.port when those properties name another IPv4
 # address or port (for example a test port such as 2948). The default is
 # guarded always because the first run, at post-fs-data, comes before the
 # early-boot trigger that sets the properties.
@@ -66,8 +66,8 @@ is_port() {
 }
 
 apply() {
-    host=$(getprop service.gpsd.host)
-    port=$(getprop service.gpsd.port)
+    host=$(getprop vendor.gpsd.host)
+    port=$(getprop vendor.gpsd.port)
     h=${host:-192.168.240.1}
     p=${port:-2947}
 
@@ -80,7 +80,7 @@ $(rule "$h" "$p")"
             guarded="$guarded and $h:$p"
         fi
     else
-        say w "($WHY) service.gpsd.host/port '$host:$port' is not an IPv4 address and port; only 192.168.240.1:2947 is guarded"
+        say w "($WHY) vendor.gpsd.host/port '$host:$port' is not an IPv4 address and port; only 192.168.240.1:2947 is guarded"
     fi
 
     if ! printf '*filter\n:%s - [0:0]\n%s\nCOMMIT\n' "$CHAIN" "$rules" | iptables-restore -w 10 --noflush; then

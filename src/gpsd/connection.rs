@@ -171,7 +171,7 @@ mod tests {
 
     use super::{
         super::{
-            protocol::{samples::*, Mode},
+            protocol::{tests::samples::*, Mode},
             tests::{line, FakeGpsd, Step},
         },
         *,

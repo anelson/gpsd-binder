@@ -6,12 +6,10 @@
 
 mod connection;
 mod feed;
-mod protocol;
+pub(crate) mod protocol;
 
 pub(crate) use feed::{Config, Event, Feed};
-#[cfg(test)]
-pub(crate) use protocol::samples;
-pub(crate) use protocol::{GnssId, Report, Satellite, Tpv, Watch};
+pub(crate) use protocol::{GnssId, Report, Satellite, SatelliteId, Tpv, Watch};
 
 /// The scripted stand-in for gpsd that the connection and feed tests use, and the test of the whole
 /// module against a real gpsd.

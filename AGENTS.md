@@ -180,19 +180,14 @@ The relevant files are in `android_frameworks_base` under
 - `SESSION_BEGIN` produces `onStarted` for apps; `SESSION_END` or
   `ENGINE_OFF` produce `onStopped`; `ENGINE_ON` is ignored.
 - The framework drops deliveries that arrive faster than each app asked for.
-- NMEA: `GnssNmeaProvider` calls `startNmea()` when the first app NMEA
-  listener becomes active and `stopNmea()` when the last one stops being
-  active, before or after `start()`, and calls `startNmea()` again after the
-  driver dies. A listener stays active while its app is in the foreground or
-  runs a foreground service. ATAK runs one, so another app in front does not
-  stop NMEA; GPSTest has a listener while its screen is shown.
-- The JNI drops NMEA sentences while no app listens only for HIDL and AIDL
-  version 1 drivers. From a version 2 driver every `gnssNmeaCb()` goes up to
-  Java, so the driver sends sentences only between `startNmea()` and
-  `stopNmea()`.
-- The framework copies at most 120 bytes of each `gnssNmeaCb()` sentence
-  (`GnssNmeaProvider.mNmeaBuffer`). Apps get the timestamp unchanged, as
-  `OnNmeaMessageListener`'s Unix time in milliseconds.
+- NMEA: Android calls `startNmea()` when the first app NMEA listener becomes
+  active and `stopNmea()` when the last one stops, before or after `start()`,
+  and `startNmea()` again after the driver dies. A listener is active while
+  its app is in the foreground or runs a foreground service. The JNI drops
+  sentences while no app listens only for HIDL and AIDL version 1 drivers,
+  so the driver sends them only between `startNmea()` and `stopNmea()`. The
+  framework copies at most 120 bytes of each sentence; apps get the
+  timestamp unchanged, as Unix time in milliseconds.
 - Capability bits not to report: MSB, MSA, SINGLE_SHOT, ON_DEMAND_TIME (it
   starts time injection), LOW_POWER_MODE, and every bit that needs an
   extension (geofencing, measurements, navigation messages, satellite
@@ -207,11 +202,10 @@ The relevant files are in `android_frameworks_base` under
   in `/system/lib64`, and the VNDK APEX has only
   `android.hardware.gnss-V2-ndk.so`. A program that needs only LLNDK
   libraries avoids this.
-- The driver's properties are `vendor.gpsd.host` and `vendor.gpsd.port`. A
-  vendor property needs the `vendor.` prefix to get a vendor SELinux label.
-  `ro.vendor.` properties cannot change once set and `persist.vendor.` ones
-  survive a reboot, while the driver reads the port at each connection and
-  the device tests change it at run time.
+- The driver's properties are `vendor.gpsd.host` and `vendor.gpsd.port`: a
+  vendor property needs the `vendor.` prefix to get a vendor SELinux label,
+  `ro.vendor.` properties cannot change once set, and `persist.vendor.` ones
+  survive a reboot.
 
 ## rsbinder 0.12.0
 
@@ -257,15 +251,13 @@ Behaviour verified in gpsd 3.27.5's source (`gpsd/gpsd.c`,
 - When a client's socket is full, gpsd drops reports, and disconnects the
   client after a partial write.
 - With `"nmea":true` in the WATCH, gpsd sends NMEA sentences on the same
-  connection as the JSON: bare lines with no JSON around them, each ending in
-  CR LF as the JSON lines do, the sentences of a packet before the reports
-  made from it. Sentences from an NMEA receiver are copied as received. For a
-  binary receiver, such as the CF-20's u-blox, gpsd builds `$GP` sentences
-  itself (`gpsd/pseudonmea.c`): RMC, GSA and GSV without a fix, GGA and ZDA
-  only with one. Comment lines are not sent. Other text packets (AIS
-  `!AIVDM`, Garmin `@`) are copied too; the driver takes only lines that
-  begin with `$` as NMEA, so it logs each such line as one that is not a
-  report.
+  connection as the JSON, as bare lines ending in CR LF, each packet's
+  sentences before the reports made from it. Sentences from an NMEA receiver
+  are copied as received; for a binary receiver gpsd builds `$GP` sentences
+  itself (`gpsd/pseudonmea.c`), GGA and ZDA only with a fix. Other text
+  packets (AIS `!AIVDM`, Garmin `@`) are copied too; the driver takes only
+  lines that begin with `$` as NMEA and logs the others as lines that are
+  not reports.
 - Without `-b` (read-only mode), any client can send commands that
   reconfigure the receiver. Anything that can connect can also read raw
   positions without Android's location permission.
@@ -284,6 +276,22 @@ Behaviour verified in gpsd 3.27.5's source (`gpsd/gpsd.c`,
   (such as 2948), and `systemd-socket-proxyd` cannot bind ports at all. A test
   gpsd must run from a copy of the binary outside `/usr/bin`; the forwarder
   uses `socat`.
+
+Satellite numbers, from gpsd 3.20 to 3.27.5 (`include/gps.h`,
+`gpsd/gpsd_json.c`, `nmeaid_to_prn()`, `ubx2_to_prn()`):
+
+- `gnssid` and `svid` come together, only when gpsd's driver knows the svid.
+  Otherwise a satellite has only `PRN`, gpsd's single number over all
+  constellations, which `Satellite::id()` decodes.
+- `svid` follows u-blox. It differs from Android's numbering for QZSS (1-10;
+  Android uses the PRN, 193 and up) and for a GLONASS satellite of unknown
+  slot (255; Android uses the frequency channel plus 100, and `freqid` is
+  the channel plus 7). Android has no IMES constellation.
+- Some of gpsd's drivers depart from its numbering. `Satellite::id()`
+  corrects the departures that the JSON shows; it cannot correct TSIP filing
+  some Copernicus SBAS satellites as Galileo, Allystar filing GPS L2C as
+  Galileo, or the NMEA driver of 3.20 and 3.21 filing QZSS and NavIC
+  sentences as GPS.
 
 Mistakes made by earlier drivers fed from gpsd, to avoid:
 
@@ -385,45 +393,32 @@ credentials. Never write credentials into the repository. SSH is by password
 (`sshpass -e` with `SSHPASS`); `sudo` takes the same password through
 `sudo -S -p ''`.
 
-- Since 2026-10-24 gpsd-binder is the installed driver on the CF-20; the
-  earlier HIDL HAL (bzobl/gpsd) is moved aside under
-  `/home/rupert/waydroid-gps/gpsd-binder/replaced-hidl-<timestamp>/`, with a
-  full overlay backup in `/home/rupert/waydroid-gps/backup/`. That directory
-  also holds `install.sh` (checksum, stop session, back up, swap files, start
-  session) and a README with the way back.
 - To install a new build: stop the session, copy the binary over
   `/var/lib/waydroid/overlay/vendor/bin/hw/android.hardware.gnss-service.gpsd-binder`
   (root-owned, 0755) and the init and VINTF files if they changed, and start
-  the session. `/home/rupert/waydroid-gps/final/common.sh` has
-  `remember_session`, `stop_session` and `start_session`.
-- Helpers on the device: `mechanics/wsh 'cmd'` runs one command as root inside
-  Android; `hostgps/start_gpsfake_2948.sh` and `stop_gpsfake_2948.sh` run a
-  private gpsd through gpsfake on 127.0.0.1:2948 with a synthetic track near
-  Greenwich (a copy of the gpsd binary outside `/usr/bin`, because of
-  SELinux); `final/status.sh` is the health check, adapted to gpsd-binder.
-- Without a sky view, replay a recording: start gpsfake on 2948, expose it
-  with a temporary `socat` unit bound to `waydroid0`
+  the session.
+- Without a sky view, replay a recording: run gpsfake on 127.0.0.1:2948 with
+  a copy of the gpsd binary outside `/usr/bin` (see the SELinux note under
+  gpsd), expose it with a temporary `socat` unit bound to `waydroid0`
   (`systemd-run --unit=gpsd-binder-fake2948 -p BindsTo=sys-subsystem-net-devices-waydroid0.device -p After=sys-subsystem-net-devices-waydroid0.device -p DynamicUser=yes /usr/bin/socat TCP-LISTEN:2948,bind=192.168.240.1,so-bindtodevice=waydroid0,freebind,reuseaddr,fork TCP:127.0.0.1:2948`),
-  then `setprop service.gpsd.port 2948` inside Android. The guard also covers
+  then `setprop vendor.gpsd.port 2948` inside Android. The guard also covers
   the port named by the property. The driver reads the property only when it
   connects. To make it switch at once, kill it by PID; init restarts it and
   the framework renews the active request within a second. Stopping the unit
   closes the driver's connection, and it reconnects to the port the property
   names next. A stopped transient unit stays listed as failed until
   `systemctl reset-failed gpsd-binder-fake2948`.
-- Run `am force-stop`, `setprop` and `svc power stayon true` as separate `wsh`
-  calls. One `waydroid shell` command that chained them stalled for about a
-  minute on the stay-on setting, so its `am force-stop` ran after the app had
-  been launched and killed it. Launch apps with
+- Run `am force-stop`, `setprop` and `svc power stayon true` as separate
+  `waydroid shell` calls. One `waydroid shell` command that chained them
+  stalled for about a minute on the stay-on setting, so its `am force-stop`
+  ran after the app had been launched and killed it. Launch apps with
   `waydroid app launch <package>` as the session user with `XDG_RUNTIME_DIR`,
   `WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` set. ATAK
   (`com.atakmap.app.civ`) needs one to seven minutes after a session start
   before it requests location; it shows its splash screen until then.
-- ATAK 5.8 registers an NMEA listener with its location request. When a
-  location has an altitude, ATAK replaces it with field 9 (height above sea
-  level) of the last `$GPGGA`, `$GNGGA` or `$GLGGA` sentence, converted to
-  height above the ellipsoid with EGM96. Without GGA sentences it shows no
-  altitude.
+- ATAK registers an NMEA listener with its location request, and takes a
+  location's altitude only from GGA sentences (field 9, converted to height
+  above the ellipsoid with EGM96). Without NMEA it shows no altitude.
 - Success looks like this: servicemanager logs "Found
   android.hardware.gnss.IGnss/default in device VINTF manifest"; `lshal` shows
   no HIDL GNSS service and `service list` shows
@@ -433,16 +428,13 @@ credentials. Never write credentials into the repository. SSH is by password
   location and no mock or test provider; ATAK shows the position in its
   bottom-right readout.
 - Before ending: the port property back at 2947, the temporary unit and
-  gpsfake stopped, `svc power stayon false`, ATAK running, and
-  `final/status.sh` reporting no problems.
+  gpsfake stopped, `svc power stayon false`, and ATAK running.
 - Proved on the device: registration and selection by the framework after a
   session restart, live satellites from the receiver, a replayed fix into
   ATAK, switching the port property at run time, reconnecting to the real
   gpsd when the test forwarder goes away, recovery after an app force-stop,
   and recovery after the driver is killed with a request active. The build
-  installed on 2026-10-25 was linked with NDK r30. GPSTest received the
-  driver's NMEA sentences, and `startNmea()` and `stopNmea()` followed the
-  listeners of ATAK and GPSTest (2026-10-25, without a fix, so without GGA).
-- Not yet tested: a real sky fix, a long run, freeze and thaw, gpsd restarts,
-  arm64, Android versions other than 13. The stale-gap logic is unit-tested
-  with a fake clock but not exercised by a real freeze.
+  installed on 2026-10-25 was linked with NDK r30.
+- Not yet tested: a long run, freeze and thaw, gpsd restarts, arm64, Android
+  versions other than 13. The stale-gap logic is unit-tested with a fake
+  clock but not exercised by a real freeze.

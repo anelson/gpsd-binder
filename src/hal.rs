@@ -19,7 +19,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use rsbinder::*;
 
-use crate::gpsd::{self, Event, GnssId, Report, Satellite, Tpv};
+use crate::gpsd::{self, Event, GnssId, Report, Satellite, SatelliteId, Tpv};
 
 #[expect(
     unreachable_pub,
@@ -119,14 +119,20 @@ impl From<GnssId> for Constellation {
     }
 }
 
-impl From<&Satellite> for GnssSvInfo {
-    fn from(s: &Satellite) -> GnssSvInfo {
-        GnssSvInfo {
-            // svid numbers a satellite within its constellation, as Android does. PRN is gpsd's single
-            // range over all constellations and agrees with svid only for GPS; it is the fallback for a
-            // receiver whose gpsd driver gives no svid.
-            svid: s.svid.map_or(s.prn.unwrap_or(0), i32::from),
-            constellation: s.gnssid.map_or(Constellation::UNKNOWN, Constellation::from),
+impl GnssSvInfo {
+    /// A satellite as Android expects it, or None when gpsd's numbers do not identify it.
+    fn from_satellite(s: &Satellite) -> Option<GnssSvInfo> {
+        let (constellation, svid) = match s.id()? {
+            // Android numbers QZSS by PRN.
+            SatelliteId::Svid(GnssId::Qzss, n) => (Constellation::QZSS, n + 192),
+            // Android has no IMES; 173-182 are its PRNs.
+            SatelliteId::Svid(GnssId::Imes, n) => (Constellation::UNKNOWN, n + 172),
+            SatelliteId::Svid(gnssid, n) => (Constellation::from(gnssid), n),
+            SatelliteId::GlonassChannel(channel) => (Constellation::GLONASS, channel + 100),
+        };
+        Some(GnssSvInfo {
+            svid,
+            constellation,
             cN0Dbhz: s.ss.unwrap_or(0.0) as f32,
             basebandCN0DbHz: 0.0,
             elevationDegrees: s.el.unwrap_or(0.0) as f32,
@@ -137,13 +143,13 @@ impl From<&Satellite> for GnssSvInfo {
             } else {
                 GnssSvFlags::NONE.0
             },
-        }
+        })
     }
 }
 
 impl GnssLocation {
-    /// A fix as Android wants it, or None when the report is not a fix with a position and a time.
-    /// `elapsed` is the boot-time clock when the report arrived.
+    /// A fix as Android expects it, or None when the report is not a fix with a position and a
+    /// time. `elapsed` is the boot-time clock when the report arrived.
     fn from_tpv(tpv: &Tpv, elapsed: Duration) -> Option<GnssLocation> {
         if !tpv.mode.has_fix() {
             return None;
@@ -233,7 +239,8 @@ impl Session {
                 }
                 Event::Report(Report::Sky(sky)) => {
                     if let Some(sats) = &sky.satellites {
-                        let svs: Vec<GnssSvInfo> = sats.iter().map(GnssSvInfo::from).collect();
+                        let svs: Vec<GnssSvInfo> =
+                            sats.iter().filter_map(GnssSvInfo::from_satellite).collect();
                         if self.send("gnssSvStatusCb", |c| c.gnssSvStatusCb(&svs)) {
                             svs_sent += 1;
                             if svs_sent == 1 || svs_sent % 60 == 0 {
@@ -320,9 +327,20 @@ impl IGnss for Gnss {
     fn setCallback(&self, callback: &Strong<dyn IGnssCallback>) -> BinderResult<()> {
         log::info!("setCallback");
         self.callback.set(Some(callback.clone()));
-        // Android ignores the result of setCallback, so a failed call is logged and the next one is
-        // still made.
-        if let Err(e) = callback.gnssSetCapabilitiesCb(0) {
+        // Set the SCHEDULING capability for this driver.
+        //
+        // SCHEDULING says that the driver handles the request interval itself. Without it, if the
+        // requested update interval is over 10s, Android stops the driver after each fix and starts it
+        // again by alarm. For this specific driver that means we would drop the connection to
+        // `gpsd`, only to have to connect to it again.  Presumably this feature exists to save
+        // power by powering down the receiver between fixes, but with `gpsd` that really isn't
+        // ideal, and doing so is unlikely to save much power anyway.
+        //
+        // Despite claiming this capability, this driver reports every fix as gpsd reports it,
+        // whatever the interval: Android drops deliveries that come sooner than each app asked for,
+        // and gpsd keeps the receiver running whether or not Android takes the fixes, so spacing or
+        // postponing them would save no power.
+        if let Err(e) = callback.gnssSetCapabilitiesCb(g::IGnssCallback::CAPABILITY_SCHEDULING) {
             log::warn!("gnssSetCapabilitiesCb failed: {e:?}");
         }
         if let Err(e) = callback.gnssSetSystemInfoCb(&GnssSystemInfo {
@@ -365,6 +383,7 @@ impl IGnss for Gnss {
     }
 
     fn setPositionMode(&self, o: &PositionModeOptions) -> BinderResult<()> {
+        // The interval is not used; see SCHEDULING in `setCallback()` for the reasoning here.
         log::info!("setPositionMode minIntervalMs={}", o.minIntervalMs);
         Ok(())
     }
@@ -476,7 +495,7 @@ impl IGnss for Gnss {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpsd::samples;
+    use crate::gpsd::protocol::tests::samples;
 
     fn tpv(line: &str) -> Tpv {
         match serde_json::from_str(line).unwrap() {
@@ -487,7 +506,12 @@ mod tests {
 
     fn satellites(line: &str) -> Vec<GnssSvInfo> {
         match serde_json::from_str(line).unwrap() {
-            Report::Sky(s) => s.satellites.unwrap().iter().map(GnssSvInfo::from).collect(),
+            Report::Sky(s) => s
+                .satellites
+                .unwrap()
+                .iter()
+                .filter_map(GnssSvInfo::from_satellite)
+                .collect(),
             other => panic!("not a SKY: {other:?}"),
         }
     }
@@ -560,7 +584,8 @@ mod tests {
     #[test]
     fn satellites_are_numbered_by_svid_within_their_constellation() {
         let svs = satellites(samples::SKY);
-        assert_eq!(svs.len(), 4);
+        // The fourth satellite's constellation is unknown, so it is left out.
+        assert_eq!(svs.len(), 3);
         let gps = &svs[0];
         assert_eq!((gps.svid, gps.constellation), (1, Constellation::GPS));
         assert_eq!(
@@ -572,16 +597,33 @@ mod tests {
         let glonass = &svs[1];
         assert_eq!((glonass.svid, glonass.constellation), (3, Constellation::GLONASS));
         assert_eq!(svs[2].constellation, Constellation::GALILEO);
-        let odd = &svs[3];
-        assert_eq!(odd.constellation, Constellation::UNKNOWN);
-        assert_eq!(odd.svFlag, GnssSvFlags::NONE.0);
-        assert_eq!((odd.elevationDegrees, odd.cN0Dbhz), (0.0, 0.0));
+        // Values gpsd leaves out are sent as 0.
+        let bare = satellites(r#"{"class":"SKY","satellites":[{"PRN":7}]}"#);
+        assert_eq!(bare[0].svFlag, GnssSvFlags::NONE.0);
+        assert_eq!((bare[0].elevationDegrees, bare[0].cN0Dbhz), (0.0, 0.0));
     }
 
     #[test]
-    fn prn_is_the_fallback_when_a_driver_gives_no_svid() {
-        let line = r#"{"class":"SKY","satellites":[{"PRN":7,"used":false}]}"#;
-        let svs = satellites(line);
-        assert_eq!((svs[0].svid, svs[0].constellation), (7, Constellation::UNKNOWN));
+    fn android_numbers() {
+        for (sat, constellation, svid) in [
+            (r#"{"PRN":193,"gnssid":5,"svid":1}"#, Constellation::QZSS, 193),
+            (r#"{"PRN":173,"gnssid":4,"svid":1}"#, Constellation::UNKNOWN, 173),
+            // A GLONASS satellite of unknown slot, by its frequency channel, -7 and 6.
+            (
+                r#"{"PRN":-1,"gnssid":6,"svid":255,"freqid":0}"#,
+                Constellation::GLONASS,
+                93,
+            ),
+            (
+                r#"{"PRN":-1,"gnssid":6,"svid":255,"freqid":13}"#,
+                Constellation::GLONASS,
+                106,
+            ),
+            // Outside Android's documented range, but the satellite's own number.
+            (r#"{"PRN":158,"gnssid":1,"svid":158}"#, Constellation::SBAS, 158),
+        ] {
+            let sv = GnssSvInfo::from_satellite(&serde_json::from_str(sat).unwrap()).unwrap();
+            assert_eq!((sv.constellation, sv.svid), (constellation, svid), "{sat}");
+        }
     }
 }

@@ -1,0 +1,22 @@
+# Configuration for the `typos` spell checker (https://github.com/crate-ci/typos).
+# Run via `just typos`, which is also part of `just vibecheck`. `typos` honors `.gitignore`,
+# so build artifacts and other ignored paths are already skipped.
+
+[files]
+# aidl/ is frozen AOSP code and is never edited. docs/session-2026-10-24/ is the record of a past
+# session and is not maintained. The NMEA recording is not prose.
+extend-exclude = [
+  "aidl/",
+  "docs/session-2026-10-24/",
+  "src/gpsd/testdata/*.log",
+]
+
+[default]
+# `typos` has no built-in inline ignore directive, but its documented workaround is to configure a regex that
+# matches a trailing marker comment indicating that typos should ignore the matching line.
+# A line ending in `spellchecker:disable-line` (after a TOML `#` or Rust `//` comment leader) is skipped.
+extend-ignore-re = ['(?Rm)^.*(#|//)\s*spellchecker:disable-line[ \t]*$']
+
+[default.extend-words]
+# Height above the ellipsoid, as in gpsd's altHAE; not a misspelling of "have".
+hae = "hae"

@@ -1,0 +1,68 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+# The driver's targets, and the hosts the unit tests run on.
+targets = [
+  { triple = "x86_64-linux-android" },
+  { triple = "aarch64-linux-android" },
+  { triple = "aarch64-apple-darwin" },
+  { triple = "x86_64-unknown-linux-gnu" },
+]
+
+[output]
+feature-depth = 1
+
+# Security advisories from https://rustsec.org/
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+ignore  = []
+version = 2
+yanked  = "warn"
+
+# License compliance
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "0BSD",
+  "Zlib",
+]
+confidence-threshold = 0.8
+exceptions = []
+# gpsd-binder itself (publish = false) is GPL-3.0-or-later; its licence is not a dependency policy.
+private = { ignore = true }
+version = 2
+
+# Dependency bans and duplicate detection
+[bans]
+allow = []
+deny = []
+external-default-features = "allow"
+highlight = "all"
+multiple-versions = "warn"
+skip = [
+  # serde_derive and the other proc macros moved to syn 3. miette-derive (build time, through
+  # rsbinder-aidl) and prost-derive, tracing-attributes and pin-project-internal (tests, through
+  # testcontainers) are still on syn 2.
+  { name = "syn", version = "2" },
+  # miette 7.6 uses unicode-width 0.1 while its textwrap dependency uses 0.2. Build time only,
+  # through rsbinder-aidl.
+  { name = "unicode-width", version = "0.1" },
+]
+skip-tree = []
+wildcards = "allow"
+workspace-default-features = "allow"
+
+# Source control
+[sources]
+allow-git        = []
+allow-registry   = ["https://github.com/rust-lang/crates.io-index"]
+unknown-git      = "deny"
+unknown-registry = "deny"

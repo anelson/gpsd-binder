@@ -1,0 +1,6 @@
+[toolchain]
+# The clippy lint names in Cargo.toml and the #[expect] list on the generated bindings in
+# src/hal.rs are tied to this version. If you change it, update Cargo.toml's rust-version too.
+channel    = "1.89.0"
+components = ["clippy", "rust-analyzer", "rustfmt"]
+targets    = ["x86_64-linux-android"]

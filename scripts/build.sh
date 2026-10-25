@@ -3,7 +3,7 @@
 #
 #   ANDROID_NDK_HOME=/path/to/android-ndk-r27c scripts/build.sh [x86_64|arm64] [api-level]
 #
-# Tested on 2026-10-24: macOS arm64 host, NDK r27c, Rust 1.96, x86_64, API 30.
+# Tested on 2026-10-25: macOS arm64 host, NDK r27c, Rust 1.89.0, x86_64, API 30.
 # arm64 is untested. Needs: rustup target add x86_64-linux-android (or aarch64-linux-android).
 set -euo pipefail
 arch=${1:-x86_64}

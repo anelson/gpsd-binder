@@ -46,7 +46,7 @@ Do not violate these. Ask the user before doing anything that comes close.
 | `aidl/`       | frozen `android.hardware.gnss` version 2 AIDL API and its hash, from AOSP (Apache-2.0); never edit                                          |
 | `android/`    | the driver's init file and VINTF manifest fragment, for `/vendor` on any Android                                                            |
 | `waydroid/`   | Waydroid integration: address-setting init file, access guard, host forwarder unit                                                          |
-| `justfile`    | the check recipes; `*.toml`, `sgconfig.yml` and `.ast-grep/` configure them (copied from the user's cgx project)                           |
+| `justfile`    | the check recipes; `*.toml`, `sgconfig.yml` and `.ast-grep/` configure them (copied from the user's cgx project); `rust-toolchain.toml` pins the toolchain |
 
 ## Build and check
 
@@ -62,6 +62,15 @@ ANDROID_NDK_HOME=/path/to/android-ndk-r27c scripts/build.sh x86_64 30   # or: ju
   runs cargo-deny and cargo-machete. The tools (`just`, `taplo`, `ast-grep`,
   `typos`, `cargo-deny`, `cargo-machete`) come from Homebrew or `cargo install`;
   `fmt` also needs a nightly toolchain for `rustfmt-nightly.toml`.
+- `rust-toolchain.toml` pins Rust 1.89.0 and installs clippy, rustfmt,
+  rust-analyzer and the Android target; `rust-version` in `Cargo.toml` says
+  the same. The clippy lint names in `Cargo.toml` and the `#[expect]` list on
+  the generated bindings are tied to that version (1.89 has already dropped
+  cgx's `match_on_vec_items`; 1.96 renames `empty_enum` and drops
+  `string_to_string`). The
+  driver's real floor is 1.86, set by rsbinder 0.12; going there needs
+  cargo's MSRV-aware resolver, `ignore` pinned to 0.4.29 in the lock, and
+  testcontainers 0.25.
 - The lints in `Cargo.toml`, `clippy.toml` and the ast-grep rules are the cgx
   project's. Suppress a lint with `#[expect(..., reason = "...")]`, never
   `#[allow]`; `unsafe_code` is forbidden (the boot-time clock comes from

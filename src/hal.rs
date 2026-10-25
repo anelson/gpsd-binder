@@ -148,13 +148,15 @@ impl GnssSvInfo {
 }
 
 impl GnssLocation {
-    /// A fix as Android expects it, or None when the report is not a fix with a position and a
-    /// time. `elapsed` is the boot-time clock when the report arrived.
+    /// A fix as Android expects it, or None when the report is not a fix with a position, a time
+    /// and a horizontal accuracy. Android requires the accuracy: on a location without one, Android
+    /// 13's `system_server` throws an exception and the whole framework restarts. `elapsed` is
+    /// the boot-time clock when the report arrived.
     fn from_tpv(tpv: &Tpv, elapsed: Duration) -> Option<GnssLocation> {
         if !tpv.mode.has_fix() {
             return None;
         }
-        let mut flags = g::GnssLocation::HAS_LAT_LONG;
+        let mut flags = g::GnssLocation::HAS_LAT_LONG | g::GnssLocation::HAS_HORIZONTAL_ACCURACY;
         // A field is flagged only when gpsd gave a value; Android reads it only then.
         let mut field = |flag: i32, value: Option<f64>| {
             value.map_or(0.0, |v| {
@@ -165,7 +167,6 @@ impl GnssLocation {
         let altitude = field(g::GnssLocation::HAS_ALTITUDE, tpv.alt_hae);
         let speed = field(g::GnssLocation::HAS_SPEED, tpv.speed);
         let bearing = field(g::GnssLocation::HAS_BEARING, tpv.track);
-        let horizontal_accuracy = field(g::GnssLocation::HAS_HORIZONTAL_ACCURACY, tpv.eph);
         let vertical_accuracy = field(g::GnssLocation::HAS_VERTICAL_ACCURACY, tpv.epv);
         let speed_accuracy = field(g::GnssLocation::HAS_SPEED_ACCURACY, tpv.eps);
         let bearing_accuracy = field(g::GnssLocation::HAS_BEARING_ACCURACY, tpv.epd);
@@ -176,7 +177,7 @@ impl GnssLocation {
             altitudeMeters: altitude,
             speedMetersPerSec: speed,
             bearingDegrees: bearing,
-            horizontalAccuracyMeters: horizontal_accuracy,
+            horizontalAccuracyMeters: tpv.eph?,
             verticalAccuracyMeters: vertical_accuracy,
             speedAccuracyMetersPerSecond: speed_accuracy,
             bearingAccuracyDegrees: bearing_accuracy,
@@ -557,23 +558,30 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_fix_flags_only_the_position() {
-        let line = r#"{"class":"TPV","mode":2,"time":"2026-10-24T20:48:31.250Z","lat":1.5,"lon":-2.5}"#;
+    fn a_bare_fix_flags_only_the_position_and_its_accuracy() {
+        let line =
+            r#"{"class":"TPV","mode":2,"time":"2026-10-24T20:48:31.250Z","lat":1.5,"lon":-2.5,"eph":9.5}"#;
         let loc = GnssLocation::from_tpv(&tpv(line), ELAPSED).unwrap();
-        assert_eq!(loc.gnssLocationFlags, g::GnssLocation::HAS_LAT_LONG);
+        assert_eq!(
+            loc.gnssLocationFlags,
+            g::GnssLocation::HAS_LAT_LONG | g::GnssLocation::HAS_HORIZONTAL_ACCURACY
+        );
         assert_eq!((loc.latitudeDegrees, loc.longitudeDegrees), (1.5, -2.5));
         // Fractional seconds are kept.
         assert_eq!(loc.timestampMillis, 1_792_874_911_250);
-        assert_eq!((loc.altitudeMeters, loc.horizontalAccuracyMeters), (0.0, 0.0));
+        assert_eq!((loc.altitudeMeters, loc.horizontalAccuracyMeters), (0.0, 9.5));
     }
 
     #[test]
-    fn reports_without_a_timed_position_fix_are_dropped() {
+    fn reports_without_a_timed_position_and_accuracy_are_dropped() {
         for line in [
             samples::TPV_NO_FIX,
             // Mode 2 from a GLL sentence: a position but no date.
-            r#"{"class":"TPV","mode":2,"lat":1.0,"lon":2.0}"#,
-            r#"{"class":"TPV","mode":3,"time":"2026-10-24T20:48:31.250Z","lat":1.0}"#,
+            r#"{"class":"TPV","mode":2,"lat":1.0,"lon":2.0,"eph":9.5}"#,
+            r#"{"class":"TPV","mode":3,"time":"2026-10-24T20:48:31.250Z","lat":1.0,"eph":9.5}"#,
+            // No accuracy: gpsd sends this from an RMC sentence that comes before the GGA and GSA
+            // sentences of the same cycle.
+            r#"{"class":"TPV","mode":3,"time":"2034-11-01T17:19:25.000Z","lat":44.069,"lon":-121.314}"#,
             // An unknown mode is not a fix.
             samples::TPV_ODD,
         ] {

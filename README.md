@@ -33,6 +33,13 @@ rustup target add x86_64-linux-android
 ANDROID_NDK_HOME=/path/to/android-ndk-r27c scripts/build.sh x86_64 30
 ```
 
+`just build` runs the same. `just test` runs the unit tests on the build
+host; the gpsd module's test against a real gpsd needs a Docker daemon.
+`just fmt`, `just vibecheck` (compile, clippy and doc checks for the host and
+the Android target) and `just depcheck` must be clean before a change is
+offered; they need `taplo`, `ast-grep`, `typos`, `cargo-deny`, `cargo-machete`
+and a nightly `rustfmt`.
+
 ## Install
 
 | File                                                    | Installed as                                               |

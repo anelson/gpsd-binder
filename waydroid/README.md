@@ -5,9 +5,9 @@ These files connect gpsd on a Linux host to gpsd-binder in a
 Waydroid 1.6.3, LineageOS 20 (Android 13) and Fedora 44. gpsd's own
 configuration does not change.
 
-Data path: receiver → gpsd on the host (127.0.0.1:2947) →
-`gpsd-waydroid-forward.service` on the Waydroid bridge (192.168.240.1:2947) →
-gpsd-binder in Android → Android's `gps` location provider.
+Data path: receiver -> gpsd on the host (127.0.0.1:2947) ->
+`gpsd-waydroid-forward.service` on the Waydroid bridge (192.168.240.1:2947) ->
+gpsd-binder in Android -> Android's `gps` location provider.
 
 | File | Installed as | Purpose |
 |---|---|---|

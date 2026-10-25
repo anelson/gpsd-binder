@@ -37,21 +37,44 @@ Do not violate these. Ask the user before doing anything that comes close.
 
 ## Layout
 
-| Path        | Contents                                                                                           |
-| ----------- | -------------------------------------------------------------------------------------------------- |
-| `src/`      | the whole driver                                                                                   |
-| `build.rs`  | generates Rust bindings from the frozen AIDL files                                                 |
-| `aidl/`     | frozen `android.hardware.gnss` version 2 AIDL API and its hash, from AOSP (Apache-2.0); never edit |
-| `android/`  | the driver's init file and VINTF manifest fragment, for `/vendor` on any Android                   |
-| `waydroid/` | Waydroid integration: address-setting init file, access guard, host forwarder unit                 |
+| Path          | Contents                                                                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/main.rs` | what is specific to the Android system: properties, the boot-time clock, logging to stderr                                                  |
+| `src/hal.rs`  | the `IGnss` service, its sessions, and the mapping from gpsd's reports to the AIDL types; unit tests of the mapping                          |
+| `src/gpsd/`   | the gpsd client: `protocol.rs` (report and request types), `connection.rs`, `feed.rs` (reconnecting loop); `testdata/` for the container test |
+| `build.rs`    | generates Rust bindings from the frozen AIDL files                                                                                          |
+| `aidl/`       | frozen `android.hardware.gnss` version 2 AIDL API and its hash, from AOSP (Apache-2.0); never edit                                          |
+| `android/`    | the driver's init file and VINTF manifest fragment, for `/vendor` on any Android                                                            |
+| `waydroid/`   | Waydroid integration: address-setting init file, access guard, host forwarder unit                                                          |
+| `justfile`    | the check recipes; `*.toml`, `sgconfig.yml` and `.ast-grep/` configure them (copied from the user's cgx project)                           |
 
 ## Build and check
 
 ```
 rustup target add x86_64-linux-android
-ANDROID_NDK_HOME=/path/to/android-ndk-r27c scripts/build.sh x86_64 30
+ANDROID_NDK_HOME=/path/to/android-ndk-r27c scripts/build.sh x86_64 30   # or: just build
 ```
 
+- `just fmt`, `just vibecheck` and `just depcheck` must pass completely clean,
+  with no warnings, before a change is presented. `vibecheck` runs ast-grep,
+  typos, `cargo check` and `cargo clippy -D warnings` for the host and for
+  `x86_64-linux-android`, and `cargo doc` with warnings as errors. `depcheck`
+  runs cargo-deny and cargo-machete. The tools (`just`, `taplo`, `ast-grep`,
+  `typos`, `cargo-deny`, `cargo-machete`) come from Homebrew or `cargo install`;
+  `fmt` also needs a nightly toolchain for `rustfmt-nightly.toml`.
+- The lints in `Cargo.toml`, `clippy.toml` and the ast-grep rules are the cgx
+  project's. Suppress a lint with `#[expect(..., reason = "...")]`, never
+  `#[allow]`; `unsafe_code` is forbidden (the boot-time clock comes from
+  `rustix`). Comments and Markdown use ASCII punctuation only.
+- Unit tests live in `#[cfg(test)] mod tests` at the bottom of the file they
+  test; there is no `tests/` directory. `just test` runs them on the host,
+  including the gpsd module's test against a real gpsd and gpsfake in a
+  container (Docker, about 5 s once the image is built). The driver binary
+  itself cannot run on the host; the HAL's session logic needs a device.
+- Do not write hand-rolled parsers for standard formats; gpsd's time stamps
+  are `chrono::DateTime<Utc>`. Nothing is stringly typed where it is up to us:
+  gpsd's JSON is deserialized into the types in `src/gpsd/protocol.rs`, and
+  the WATCH request is serialized from `Watch`.
 - The NDK in use is r27c (27.2.12479018). On macOS the `.dmg` holds the NDK
   root at `AndroidNDK<build>.app/Contents/NDK`. The NDK ships universal
   binaries under `toolchains/llvm/prebuilt/darwin-x86_64`, which
@@ -59,18 +82,16 @@ ANDROID_NDK_HOME=/path/to/android-ndk-r27c scripts/build.sh x86_64 30
 - The linker is `x86_64-linux-android30-clang`. API level 30 lets the binary
   load on Android 11 and later; the AIDL interface needs Android 13 anyway.
 - A release build takes about 20 s from clean and gives a stripped PIE of
-  about 800 KB.
-- Clippy needs the linker too:
-  `CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android30-clang cargo clippy --release --target x86_64-linux-android`.
+  about 1 MB. `cargo check` and `cargo clippy` for the Android target do not
+  need the NDK; only linking does.
 - After a build, check the dependencies:
   `$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-readelf -d target/x86_64-linux-android/release/gpsd-binder | grep NEEDED`
   must list only `libc.so` and `libdl.so`.
-- Always build for an Android target. Do not build the driver for plain Linux:
-  rsbinder then speaks only the Android 16 servicemanager protocol (see
-  below).
+- Do not build the driver binary for plain Linux: rsbinder then speaks only
+  the Android 16 servicemanager protocol (see below). rsbinder and
+  rsbinder-aidl do compile on macOS and Linux, which is what lets the unit
+  tests run on the host.
 - arm64 (`scripts/build.sh arm64 30`) has not been built or tested.
-- There are no tests yet. The driver cannot run on the build host; testing
-  needs an Android 13 device or container.
 
 ## Android 13 GNSS framework
 
@@ -145,6 +166,10 @@ The relevant files are in `android_frameworks_base` under
   Calls across the system and vendor boundary need that mark.
 - Cargo forbids dots in program names. The program is `gpsd-binder`; install
   it as `/vendor/bin/hw/android.hardware.gnss-service.gpsd-binder`.
+- The generated bindings trip `unreachable_pub`, `clippy::allow_attributes`
+  and `clippy::unused_self` under this crate's lint set; `mod gen` in
+  `src/hal.rs` expects exactly those. If a toolchain or rsbinder-aidl update
+  changes the set, clippy reports an unfulfilled expectation.
 - Do not link a death notification to servicemanager (handle 0). Once it
   fires, rsbinder's cached servicemanager proxy stays dead for the life of the
   process. `reconnect.rs` only helps clients find a service again; it does not
@@ -174,6 +199,14 @@ Behaviour verified in gpsd 3.27.5's source (`gpsd/gpsd.c`,
 - Under socket activation gpsd accepts at most the control socket plus two TCP
   listeners. Fedora's `gpsd.socket` already passes three sockets, so an extra
   `ListenStream` is silently ignored; hence the separate forwarder.
+- gpsd 3.25 writes `"readonly":"true"` as a string in DEVICE, against its own
+  specification; the driver does not model that field. TPVs derived from GLL
+  sentences carry a position but no `time`; the driver forwards only fixes
+  with a time. The driver reads `altHAE` only (gpsd 3.20 and later) and
+  `eph` only; it does not fall back to the deprecated `alt` or to `epx`.
+- gpsfake: `-o` must be written `-o=-G` for gpsd to listen on all addresses;
+  without `-1` it replays the log forever; it prints "log cycle of ...
+  begins." to stderr once gpsd is up.
 - On Fedora with SELinux enforcing, `/usr/bin/gpsd` cannot bind other ports
   (such as 2948), and `systemd-socket-proxyd` cannot bind ports at all. A test
   gpsd must run from a copy of the binary outside `/usr/bin`; the forwarder
@@ -275,30 +308,55 @@ Operating a Waydroid container from scripts:
 The user's test machine is a Panasonic CF-20 tablet running Fedora 44 with
 Waydroid 1.6.3 and the LineageOS 20 image (Android 13, x86_64), with a u-blox
 NEO-M8N receiver owned by gpsd. Ask the user for its address and
-credentials. Never write credentials into the repository.
+credentials. Never write credentials into the repository. SSH is by password
+(`sshpass -e` with `SSHPASS`); `sudo` takes the same password through
+`sudo -S -p ''`.
 
-- To test gpsd-binder: stop the session, back up the overlay, move the HIDL
-  driver's `.rc` and VINTF `.xml` aside, install gpsd-binder's files (both
-  init files, the VINTF fragment, the binary), and start the session.
-  Afterwards remove them, put the HIDL files back, check the overlay against
-  the production checksums, and restart the session. Before ending, the
-  production status check must report no problems, temporary units and test
-  gpsd instances must be stopped, `svc power stayon` must be off, and ATAK
-  must be relaunched if the session was restarted.
-- Without a sky view, replay a recording: run `gpsfake` (or a private gpsd)
-  on another port such as 2948, from a gpsd binary outside `/usr/bin`; expose
-  it with a temporary `socat` unit bound to `waydroid0`
-  (`systemd-run ... socat TCP-LISTEN:2948,bind=192.168.240.1,so-bindtodevice=waydroid0,freebind,reuseaddr,fork TCP:127.0.0.1:2948`);
-  then `setprop service.gpsd.port 2948` inside Android and make the driver
-  reconnect. The guard also covers the port named by the property.
+- Since 2026-10-24 gpsd-binder is the installed driver on the CF-20; the
+  earlier HIDL HAL (bzobl/gpsd) is moved aside under
+  `/home/rupert/waydroid-gps/gpsd-binder/replaced-hidl-<timestamp>/`, with a
+  full overlay backup in `/home/rupert/waydroid-gps/backup/`. That directory
+  also holds `install.sh` (checksum, stop session, back up, swap files, start
+  session) and a README with the way back.
+- To install a new build: stop the session, copy the binary over
+  `/var/lib/waydroid/overlay/vendor/bin/hw/android.hardware.gnss-service.gpsd-binder`
+  (root-owned, 0755) and the init and VINTF files if they changed, and start
+  the session. `/home/rupert/waydroid-gps/final/common.sh` has
+  `remember_session`, `stop_session` and `start_session`.
+- Helpers on the device: `mechanics/wsh 'cmd'` runs one command as root inside
+  Android; `hostgps/start_gpsfake_2948.sh` and `stop_gpsfake_2948.sh` run a
+  private gpsd through gpsfake on 127.0.0.1:2948 with a synthetic track near
+  Greenwich (a copy of the gpsd binary outside `/usr/bin`, because of
+  SELinux); `final/status.sh` is the health check, adapted to gpsd-binder.
+- Without a sky view, replay a recording: start gpsfake on 2948, expose it
+  with a temporary `socat` unit bound to `waydroid0`
+  (`systemd-run --unit=gpsd-binder-fake2948 -p BindsTo=sys-subsystem-net-devices-waydroid0.device -p After=sys-subsystem-net-devices-waydroid0.device -p DynamicUser=yes /usr/bin/socat TCP-LISTEN:2948,bind=192.168.240.1,so-bindtodevice=waydroid0,freebind,reuseaddr,fork TCP:127.0.0.1:2948`),
+  then `setprop service.gpsd.port 2948` inside Android. The guard also covers
+  the port named by the property. Stopping the unit closes the driver's
+  connection, and it reconnects to the port the property names next.
+- Run `am force-stop`, `setprop` and `svc power stayon true` as separate `wsh`
+  calls. One `waydroid shell` command that chained them stalled for about a
+  minute on the stay-on setting, so its `am force-stop` ran after the app had
+  been launched and killed it. Launch apps with
+  `waydroid app launch <package>` as the session user with `XDG_RUNTIME_DIR`,
+  `WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` set. ATAK
+  (`com.atakmap.app.civ`) needs about a minute before it requests location.
 - Success looks like this: servicemanager logs "Found
-  android.hardware.gnss.IGnss/default in device VINTF manifest"; GnssJni logs
-  "Successfully got GNSS AIDL handle. Version=2."; `lshal` shows no HIDL GNSS
-  service; GPSTest shows gpsd's satellites with the same IDs, elevations and
-  azimuths, and a locked fix; `dumpsys location` shows the `gps` provider's
-  last location and no mock or test provider.
-- Proved on the device: registration, selection by the framework, live
-  satellites, replayed fixes, recovery after an app force-stop.
-- Not yet tested: a real sky fix, a long run, freeze and thaw, gpsd
-  restarts, arm64, Android versions other than 13, and the fixes for status
-  order and stale reports (compile-checked only).
+  android.hardware.gnss.IGnss/default in device VINTF manifest"; `lshal` shows
+  no HIDL GNSS service and `service list` shows
+  `android.hardware.gnss.IGnss/default`; the kernel log shows
+  `gpsd-binder: session N: connected to gpsd 3.27.5 at ...` and the device
+  list; `dumpsys location` shows the `gps` provider's request and last
+  location and no mock or test provider; ATAK shows the position in its
+  bottom-right readout.
+- Before ending: the port property back at 2947, the temporary unit and
+  gpsfake stopped, `svc power stayon false`, ATAK running, and
+  `final/status.sh` reporting no problems.
+- Proved on the device: registration and selection by the framework after a
+  session restart, live satellites from the receiver, a replayed fix into
+  ATAK, switching the port property at run time, reconnecting to the real
+  gpsd when the test forwarder goes away, and recovery after an app
+  force-stop.
+- Not yet tested: a real sky fix, a long run, freeze and thaw, gpsd restarts,
+  arm64, Android versions other than 13. The stale-gap logic is unit-tested
+  with a fake clock but not exercised by a real freeze.

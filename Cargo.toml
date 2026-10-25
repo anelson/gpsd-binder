@@ -1,12 +1,12 @@
 [package]
-name = "gpsd-binder"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.86"
+description  = "Android GNSS driver (AIDL android.hardware.gnss) backed by gpsd, in pure Rust over binder"
+edition      = "2021"
 license-file = "LICENSE"
-description = "Android GNSS driver (AIDL android.hardware.gnss) backed by gpsd, in pure Rust over binder"
-repository = "https://github.com/anelson/gpsd-binder"
-publish = false
+name         = "gpsd-binder"
+publish      = false
+repository   = "https://github.com/anelson/gpsd-binder"
+rust-version = "1.86"
+version      = "0.1.0"
 
 [[bin]]
 # Cargo forbids dots in program names; install it as
@@ -15,15 +15,123 @@ name = "gpsd-binder"
 path = "src/main.rs"
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "std"] }
+log    = { version = "0.4", features = ["std"] }
 # Pinned: rsbinder is pre-1.0. android_13_plus covers Android 13 to 17.
-rsbinder = { version = "=0.12.0", default-features = false, features = ["android_13_plus"] }
+rsbinder   = { version = "=0.12.0", default-features = false, features = ["android_13_plus"] }
+rustix     = { version = "1.1.5", features = ["time"] }
+serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
-libc = "0.2"
+
+[dev-dependencies]
+# Runs gpsd and gpsfake in a container for the gpsd module's tests. Pulls in
+# tokio, but only for the test build.
+testcontainers = { version = "0.28", features = ["blocking"] }
 
 [build-dependencies]
 rsbinder-aidl = { version = "=0.12.0", default-features = false }
 
+# With --with-metadata, cargo-machete scans only the package's targets, not build.rs, where
+# rsbinder-aidl is used.
+[package.metadata.cargo-machete]
+ignored = ["rsbinder-aidl"]
+
 [profile.release]
-lto = true
-strip = true
 codegen-units = 1
+lto           = true
+strip         = true
+
+[lints.rust]
+future_incompatible    = { level = "warn", priority = -1 }
+nonstandard_style      = { level = "warn", priority = -1 }
+rust_2018_idioms       = { level = "warn", priority = -1 }
+unexpected_cfgs        = "warn"
+unnameable_types       = "warn"
+unreachable_pub        = "warn"
+unsafe_code            = "forbid"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes       = "warn"
+unused_macro_rules     = "warn"
+unused_qualifications  = "warn"
+
+[lints.clippy]
+allow_attributes                   = "warn"
+allow_attributes_without_reason    = "warn"
+assertions_on_result_states        = "warn"
+await_holding_lock                 = "warn"
+await_holding_refcell_ref          = "warn"
+cast_sign_loss                     = "warn"
+char_lit_as_u8                     = "warn"
+checked_conversions                = "warn"
+dbg_macro                          = "warn"
+debug_assert_with_mut_call         = "warn"
+doc_markdown                       = "warn"
+empty_enums                        = "warn"
+enum_glob_use                      = "deny"
+exit                               = "warn"
+expl_impl_clone_on_copy            = "warn"
+explicit_deref_methods             = "warn"
+explicit_into_iter_loop            = "warn"
+fallible_impl_from                 = "warn"
+filter_map_next                    = "warn"
+flat_map_option                    = "warn"
+float_cmp                          = "warn"
+float_cmp_const                    = "warn"
+fn_params_excessive_bools          = "warn"
+from_iter_instead_of_collect       = "warn"
+if_let_mutex                       = "warn"
+implicit_clone                     = "warn"
+imprecise_flops                    = "warn"
+inefficient_to_string              = "warn"
+invalid_upcast_comparisons         = "warn"
+iter_not_returning_iterator        = "warn"
+large_digit_groups                 = "warn"
+large_futures                      = "warn"
+large_stack_arrays                 = "warn"
+large_types_passed_by_value        = "warn"
+let_underscore_future              = "warn"
+let_unit_value                     = "warn"
+linkedlist                         = "warn"
+lossy_float_literal                = "warn"
+macro_use_imports                  = "warn"
+manual_ok_or                       = "warn"
+map_err_ignore                     = "warn"
+map_flatten                        = "warn"
+map_unwrap_or                      = "warn"
+match_same_arms                    = "warn"
+match_wild_err_arm                 = "warn"
+match_wildcard_for_single_variants = "warn"
+mem_forget                         = "warn"
+missing_enforced_import_renames    = "warn"
+multiple_unsafe_ops_per_block      = "warn"
+mut_mut                            = "warn"
+mutex_integer                      = "warn"
+needless_borrow                    = "warn"
+needless_continue                  = "warn"
+needless_for_each                  = "warn"
+option_option                      = "warn"
+path_buf_push_overwrite            = "warn"
+ptr_as_ptr                         = "warn"
+rc_mutex                           = "warn"
+ref_option_ref                     = "warn"
+rest_pat_in_fully_bound_structs    = "warn"
+same_functions_in_if_condition     = "warn"
+semicolon_if_nothing_returned      = "warn"
+single_match_else                  = "warn"
+string_add                         = "warn"
+string_add_assign                  = "warn"
+string_lit_as_bytes                = "warn"
+string_slice                       = "warn"
+todo                               = "warn"
+trait_duplication_in_bounds        = "warn"
+undocumented_unsafe_blocks         = "warn"
+unimplemented                      = "warn"
+unnecessary_safety_comment         = "warn"
+unnecessary_safety_doc             = "warn"
+unnested_or_patterns               = "warn"
+unused_result_ok                   = "warn"
+unused_self                        = "warn"
+unwrap_used                        = "warn"
+useless_transmute                  = "warn"
+verbose_file_reads                 = "warn"
+zero_sized_map_values              = "warn"

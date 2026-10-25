@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# Read-only, with no secrets: pull requests from forks run this workflow once the maintainer
+# approves the run.
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run for the previous one. Pushes to master each get a run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: Format, lint and dependency checks
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # rustup installs the toolchain that rust-toolchain.toml names.
+      - name: Install Rust
+        run: rustup toolchain install --no-self-update
+
+      # Not pinned: this project takes each cgx release as it comes.
+      - name: Install cgx and the tools in cgx.toml
+        uses: anelson/cgx@master
+        with:
+          prefetch-all: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - run: cgx just fmtcheck
+      - run: cgx just vibecheck
+      - run: cgx just depcheck
+
+      # Builds the crate as crates.io would receive it, which proves that the include list in
+      # Cargo.toml is complete.
+      - name: Check the crate package
+        run: cargo package --locked
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install --no-self-update
+
+      - name: Install cgx and the tools in cgx.toml
+        uses: anelson/cgx@master
+        with:
+          prefetch-all: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - run: cgx just test
+
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            triple: x86_64-linux-android
+          - arch: arm64
+            triple: aarch64-linux-android
+    env:
+      # The runner image's NDK r30, named by version so that an image update cannot change it.
+      ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/30.0.16248370
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install --no-self-update
+
+      - name: Install cgx and the tools in cgx.toml
+        uses: anelson/cgx@master
+        with:
+          prefetch-all: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build-${{ matrix.arch }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - run: cgx just build ${{ matrix.arch }}
+
+      # For testing a pull request's build on a device.
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gpsd-binder-${{ matrix.triple }}
+          path: target/${{ matrix.triple }}/release/gpsd-binder
+          if-no-files-found: error
+          retention-days: 14
+
+  # The one check that master's branch protection requires. A matrix job has no single name to
+  # require, and a skipped job would count as passed, so this job fails unless every job above
+  # succeeded.
+  build-and-test:
+    name: Build and Test
+    needs: [check, test, build]
+    if: always()
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Check that every job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = success ] || exit 1
+          done

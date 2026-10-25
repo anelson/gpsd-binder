@@ -1,0 +1,189 @@
+name: Release
+
+# A tag vX.Y.Z builds the archives, creates the GitHub release and publishes the crate. Started by
+# hand, the workflow only builds and packages. .agents/skills/release/SKILL.md describes a release.
+#
+# crates.io accepts trusted-publishing tokens only from this file, by name, in the "release"
+# environment; renaming either breaks publishing until the crates.io settings match. Actions are
+# pinned by commit because these jobs can publish.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Everything that runs build tools runs here, with a read-only token.
+  build:
+    name: Build and package
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      # The runner image's NDK r30, as in ci.yml.
+      ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/30.0.16248370
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install --no-self-update
+
+      - name: Install cgx and the tools in cgx.toml
+        uses: anelson/cgx@master
+        with:
+          prefetch-all: true
+
+      - name: Read the version and check it against the tag
+        id: version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match version $version in Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Verified here, so that the crates-io job can upload the package without building anything.
+      - name: Check the crate package
+        run: cargo package --locked
+
+      - name: Build
+        run: |
+          cgx just build x86_64
+          cgx just build arm64
+
+      # The archive layout is the one that INSTALLING.md describes.
+      - name: Assemble the archives and SHA256SUMS
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir dist
+          for triple in x86_64-linux-android aarch64-linux-android; do
+            dir="gpsd-binder-$VERSION-$triple"
+            mkdir -p "dist/$dir/android" "dist/$dir/waydroid"
+            install -m 0755 "target/$triple/release/gpsd-binder" \
+              "dist/$dir/android.hardware.gnss-service.gpsd-binder"
+            install -m 0644 android/* "dist/$dir/android/"
+            cp -p waydroid/* "dist/$dir/waydroid/"
+            install -m 0644 LICENSE "dist/$dir/"
+            tar -C dist --sort=name --owner=0 --group=0 --numeric-owner -czf "dist/$dir.tar.gz" "$dir"
+            rm -r "dist/$dir"
+          done
+          (cd dist && sha256sum -- *.tar.gz > SHA256SUMS)
+          ls -l dist
+
+      - name: Extract the release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v heading="## [$VERSION]" '
+            index($0, heading) == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            if [ "$GITHUB_EVENT_NAME" = push ]; then
+              echo "CHANGELOG.md has no entry for $VERSION" >&2
+              exit 1
+            fi
+            echo "::warning::CHANGELOG.md has no entry for $VERSION yet"
+          fi
+          cat release-notes.md
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: |
+            dist/
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 30
+
+  github-release:
+    name: Create the GitHub release
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the attestation
+      attestations: write # store the attestation
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "gpsd-binder $VERSION" --notes-file release-notes.md \
+            dist/*.tar.gz dist/SHA256SUMS
+
+  # After the GitHub release, because a GitHub release can be corrected and a crates.io version
+  # cannot. This job builds nothing: a build script could otherwise use the job's OIDC token.
+  crates-io:
+    name: Publish to crates.io
+    needs: [build, github-release]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # crates.io trusted publishing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install --no-self-update
+
+      # The first version is published by hand, because crates.io accepts a trusted publisher only
+      # for a crate that exists. Skipping a published version also makes a rerun harmless.
+      - name: Check whether this version is on crates.io
+        id: published
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -A 'gpsd-binder release workflow (https://github.com/anelson/gpsd-binder)' \
+            "https://crates.io/api/v1/crates/gpsd-binder/$VERSION")"
+          case "$status" in
+            200) echo "gpsd-binder $VERSION is already on crates.io"; echo "published=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "published=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "crates.io answered HTTP $status" >&2; exit 1 ;;
+          esac
+
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        if: steps.published.outputs.published == 'false'
+        id: auth
+
+      - name: Publish
+        if: steps.published.outputs.published == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked --no-verify

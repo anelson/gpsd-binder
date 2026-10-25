@@ -1,0 +1,26 @@
+name: Dependabot auto-merge
+
+# Turns on auto-merge for each Dependabot pull request. GitHub merges it once the maintainer has
+# approved it and the "Build and Test" check has passed, as master's branch protection requires.
+# The merge is made with the workflow token, so it starts no CI run on master.
+on:
+  pull_request:
+    branches: [master]
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'anelson/gpsd-binder'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"

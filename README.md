@@ -29,7 +29,7 @@ the libraries of one Android release.
 ## Build
 
 ```
-ANDROID_NDK_HOME=/path/to/android-ndk-r27c just build x86_64
+ANDROID_NDK_HOME=/path/to/android-ndk-r30 just build x86_64
 ```
 
 [BUILDING.md](BUILDING.md) covers the toolchain, the NDK, the checks and

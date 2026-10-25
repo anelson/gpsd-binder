@@ -6,6 +6,7 @@
 ast-grep      = "0.51.0"
 cargo-deny    = "0.20.2"
 cargo-machete = "0.9.2"
+just          = "1.59.0"
 taplo-cli     = "0.10.0"
 typos-cli     = "1.51.1"
 

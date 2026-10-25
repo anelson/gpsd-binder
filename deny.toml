@@ -33,11 +33,9 @@ allow = [
   "Unicode-3.0",
   "0BSD",
   "Zlib",
+  "GPL-3.0-or-later",
 ]
 confidence-threshold = 0.8
-exceptions = []
-# gpsd-binder itself (publish = false) is GPL-3.0-or-later; its licence is not a dependency policy.
-private = { ignore = true }
 version = 2
 
 # Dependency bans and duplicate detection

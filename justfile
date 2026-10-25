@@ -24,13 +24,14 @@ ast-grep:
 typos:
     cgx typos
 
-# Compile, clippy and doc checks, for the host (where the unit tests run) and for the Android target.
+# Compile, clippy and doc checks, for the host (where the unit tests run) and for the Android targets.
 # This must be completely clean before a change is presented for review.
 vibecheck: ast-grep typos
     cargo check --all-targets
     cargo clippy --all-targets -- -D warnings
     cargo check --target x86_64-linux-android
     cargo clippy --target x86_64-linux-android -- -D warnings
+    cargo clippy --target aarch64-linux-android -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
 # Security advisories, licences and duplicate versions (cargo-deny), unused dependencies (cargo-machete).
@@ -47,6 +48,7 @@ test:
 
 # Release build for Android: `just build x86_64` or `just build arm64`, linked for Android API level
 # `api`. Needs ANDROID_NDK_HOME; see BUILDING.md. The NDK's clang for the target does the linking.
+# The recipe fails if the binary needs any library other than libc.so and libdl.so.
 [unix]
 build arch api="30":
     #!/usr/bin/env bash
@@ -62,7 +64,8 @@ build arch api="30":
         *) echo "unsupported build host: $(uname -s)" >&2; exit 2 ;;
     esac
     ndk="${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME to the NDK root directory}"
-    linker="$ndk/toolchains/llvm/prebuilt/$host/bin/${triple}{{api}}-clang"
+    bin="$ndk/toolchains/llvm/prebuilt/$host/bin"
+    linker="$bin/${triple}{{api}}-clang"
     [ -x "$linker" ] || { echo "linker not found: $linker" >&2; exit 1; }
     if ! rustup target list --installed | grep -qx "$triple"; then
         echo "Rust target $triple is not installed; run: rustup target add $triple" >&2
@@ -71,7 +74,13 @@ build arch api="30":
     cd "{{justfile_directory()}}"
     export "CARGO_TARGET_$(echo "$triple" | tr 'a-z-' 'A-Z_')_LINKER=$linker"
     cargo build --release --target "$triple"
-    echo "built: $(pwd)/target/$triple/release/gpsd-binder"
+    binary="target/$triple/release/gpsd-binder"
+    needed="$("$bin/llvm-readelf" -d "$binary" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p' | sort | tr '\n' ' ')"
+    if [ "$needed" != "libc.so libdl.so " ]; then
+        echo "$binary needs libraries other than libc.so and libdl.so: $needed" >&2
+        exit 1
+    fi
+    echo "built: $(pwd)/$binary"
     echo "install as: /vendor/bin/hw/android.hardware.gnss-service.gpsd-binder"
 
 precommit: fmt vibecheck depcheck test

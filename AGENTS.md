@@ -41,11 +41,13 @@ BUILDING.md says what to install and what each `just` recipe does. The rules
 for agents:
 
 - `just fmt`, `just vibecheck` and `just depcheck` must pass completely clean,
-  with no warnings, before a change is presented. After an Android build,
-  the `NEEDED` check in BUILDING.md must list only `libc.so` and `libdl.so`.
+  with no warnings, before a change is presented. `just build` fails if the
+  binary needs any library other than `libc.so` and `libdl.so`.
 - The check tools (`taplo`, `ast-grep`, `typos`, `cargo-deny`, `cargo-machete`) run
   through `cgx`, the user's own tool; their versions are in `cgx.toml`. Do not
-  install them by hand or call them directly in the justfile.
+  install them by hand or call them directly in the justfile. CI also runs
+  `just` itself through cgx (`cgx just <recipe>`), which is why `cgx.toml`
+  lists it; locally the user runs `just` directly.
 - `rust-toolchain.toml` pins Rust 1.89.0; `rust-version` in `Cargo.toml` says
   the same. The clippy lint names in `Cargo.toml` and the `#[expect]` list on
   the generated bindings are tied to that version (1.89 has already dropped
@@ -66,11 +68,75 @@ for agents:
   are `chrono::DateTime<Utc>`. Nothing is stringly typed where it is up to us:
   gpsd's JSON is deserialized into the types in `src/gpsd/protocol.rs`, and
   the WATCH request is serialized from `Watch`.
-- Do not build the driver binary for plain Linux: rsbinder then speaks only
-  the Android 16 servicemanager protocol (see below). rsbinder and
+- Do not build the driver binary for plain Linux to run it: rsbinder then
+  speaks only the Android 16 servicemanager protocol (see below). rsbinder and
   rsbinder-aidl do compile on macOS and Linux, which is what lets the unit
-  tests run on the host.
-- arm64 (`just build arm64`) has not been built or tested.
+  tests and the verify build of `cargo package` run on the host.
+- arm64 (`just build arm64`) builds, but has not run on a device.
+- The NDK supplies only the linker, the C runtime start files, `libunwind.a`
+  and the stub libraries; rustc compiles the code. The API level in the
+  linker name (30), not the NDK version, sets the oldest Android release that
+  can load the binary. CI uses NDK r30, the 2026 long-term-support release;
+  Rust supports the newest LTS NDK. Do not go back to r27: from Android 15 on,
+  arm64 devices may use 16 KiB pages, which cannot load a binary aligned to
+  4 KiB, and only r28 and later align to 16 KiB by default.
+
+## CI and releases
+
+BUILDING.md describes CI and releases for people. The facts for agents:
+
+- Workflows: `.github/workflows/ci.yml` (checks, tests, `cargo package`, and
+  builds for both targets), `release.yml` (runs on a tag `v*`; started by
+  hand it only builds and packages), and `dependabot-auto-merge.yml`. Every
+  job runs on `ubuntu-26.04`. No arm runner is used: the NDK has no Linux
+  arm64 host toolchain, and both targets cross-compile from x86_64.
+- The required status check is the job named `Build and Test` in `ci.yml`.
+  The branch protection on master names it, so renaming the job blocks every
+  pull request.
+- Rust comes from `rustup toolchain install --no-self-update`, which reads
+  `rust-toolchain.toml`. Everything else comes through the cgx action,
+  referenced as `anelson/cgx@master` with its defaults (latest release,
+  caching on) and `prefetch-all`. It is unpinned on purpose: the user updates
+  cgx often and wants each release at once. Do not pin it, turn off its
+  cache, or replace it with per-tool install actions.
+- The NDK comes from the runner image, named by version in `ANDROID_NDK_HOME`
+  in both workflows (`/usr/local/lib/android/sdk/ndk/30.0.16248370`). When an
+  image drops that version, the build fails with "linker not found"; change
+  both workflows to a version that the image's README lists.
+- `ci.yml` uses version tags for actions. `release.yml` pins them by commit
+  hash, because its jobs can publish. Dependabot updates both kinds.
+- Security model: pull requests from forks run only after the maintainer
+  approves the run; the CI token is read-only; no workflow uses a secret or a
+  personal access token. Do not add `pull_request_target` or `workflow_run`
+  triggers. In `release.yml` the job that runs build tools has a read-only
+  token, and the jobs that hold publishing permissions run no build tools.
+  The crates.io job therefore publishes with `--no-verify`; the build job has
+  already run `cargo package --locked`.
+- crates.io trusted publishing accepts tokens only from the workflow file
+  `release.yml`, in the GitHub environment `release`. Renaming either breaks
+  publishing until the crates.io settings change to match. crates.io accepts
+  a trusted publisher only for a crate that exists, so the first version is
+  published by hand with a token.
+- Dependabot opens weekly pull requests, after a 7-day cooldown, with minor
+  and patch updates grouped. `dependabot-auto-merge.yml` turns on auto-merge
+  for each of them; the branch protection on master holds the merge until
+  the user has approved the pull request and `Build and Test` has passed. A
+  merge made with the workflow token starts no workflows, so master has no CI
+  run for such a merge commit.
+- Releases: `.agents/skills/release/SKILL.md`. The release notes are the
+  version's section of `CHANGELOG.md`.
+- Repository settings that the workflows depend on: fork pull request
+  approval for all external contributors; auto-merge allowed; classic branch
+  protection on master, as in cgx, that requires one approving review (stale
+  approvals dismissed) and the `Build and Test` check from GitHub Actions, and
+  does not bind admins; a ruleset on tags `v*` that lets only repository
+  admins create, move or delete them; the environment `release`, deployable
+  only from tags `v*`.
+- Skills live in `.agents/skills/`; `.claude/skills` is a symlink to it, for
+  Claude Code.
+- Never add a `Co-Authored-By` trailer for an AI agent to a commit message or
+  a pull request description. The hook in `.claude/settings.json` blocks such
+  commits, and the same file turns off Claude Code's own attribution.
 
 ## Android 13 GNSS framework
 
@@ -311,15 +377,20 @@ credentials. Never write credentials into the repository. SSH is by password
   with a temporary `socat` unit bound to `waydroid0`
   (`systemd-run --unit=gpsd-binder-fake2948 -p BindsTo=sys-subsystem-net-devices-waydroid0.device -p After=sys-subsystem-net-devices-waydroid0.device -p DynamicUser=yes /usr/bin/socat TCP-LISTEN:2948,bind=192.168.240.1,so-bindtodevice=waydroid0,freebind,reuseaddr,fork TCP:127.0.0.1:2948`),
   then `setprop service.gpsd.port 2948` inside Android. The guard also covers
-  the port named by the property. Stopping the unit closes the driver's
-  connection, and it reconnects to the port the property names next.
+  the port named by the property. The driver reads the property only when it
+  connects. To make it switch at once, kill it by PID; init restarts it and
+  the framework renews the active request within a second. Stopping the unit
+  closes the driver's connection, and it reconnects to the port the property
+  names next. A stopped transient unit stays listed as failed until
+  `systemctl reset-failed gpsd-binder-fake2948`.
 - Run `am force-stop`, `setprop` and `svc power stayon true` as separate `wsh`
   calls. One `waydroid shell` command that chained them stalled for about a
   minute on the stay-on setting, so its `am force-stop` ran after the app had
   been launched and killed it. Launch apps with
   `waydroid app launch <package>` as the session user with `XDG_RUNTIME_DIR`,
   `WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` set. ATAK
-  (`com.atakmap.app.civ`) needs about a minute before it requests location.
+  (`com.atakmap.app.civ`) needs one to seven minutes after a session start
+  before it requests location; it shows its splash screen until then.
 - Success looks like this: servicemanager logs "Found
   android.hardware.gnss.IGnss/default in device VINTF manifest"; `lshal` shows
   no HIDL GNSS service and `service list` shows
@@ -334,8 +405,9 @@ credentials. Never write credentials into the repository. SSH is by password
 - Proved on the device: registration and selection by the framework after a
   session restart, live satellites from the receiver, a replayed fix into
   ATAK, switching the port property at run time, reconnecting to the real
-  gpsd when the test forwarder goes away, and recovery after an app
-  force-stop.
+  gpsd when the test forwarder goes away, recovery after an app force-stop,
+  and recovery after the driver is killed with a request active. The build
+  installed on 2026-10-25 was linked with NDK r30.
 - Not yet tested: a real sky fix, a long run, freeze and thaw, gpsd restarts,
   arm64, Android versions other than 13. The stale-gap logic is unit-tested
   with a fake clock but not exercised by a real freeze.

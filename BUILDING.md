@@ -20,9 +20,9 @@ just --list
 Required to build the driver:
 
 - `rustup`. `rust-toolchain.toml` pins the Rust version that we target, plus
-  necessary components and the `x86_64-linux-android` target; rustup installs all
+  necessary components and both Android targets; rustup installs all
   of them the first time `cargo` runs in this directory.
-- Android NDK r27c, from https://developer.android.com/ndk/downloads. On macOS the
+- Android NDK r30, the version CI uses, from https://developer.android.com/ndk/downloads. On macOS the
   `.dmg` holds the NDK root at
   `AndroidNDK<build>.app/Contents/NDK`; mount the image and point `ANDROID_NDK_HOME` at that
   directory. On Linux, unpack the `.zip` and point `ANDROID_NDK_HOME` at the unpacked directory.
@@ -61,15 +61,14 @@ Required for running some of the unit tests:
   run builds a Debian image with gpsd and gpsfake (about a minute); later runs take about 5 s.
   Without a daemon that one test fails with a message saying so; the other tests still run.
 
-The build host that has been used is macOS on Apple silicon. The `build` recipe is a POSIX shell
-script that also knows the Linux NDK layout, so it should work on Linux, presumably including WSL,
-but neither has been tried. Native Windows builds are not supported.
+Builds have been made on macOS on Apple silicon, and CI builds on Ubuntu 26.04 on x86_64. WSL has
+not been tried. Native Windows builds are not supported.
 
 ## Building the driver
 
 ```sh
-ANDROID_NDK_HOME=/path/to/android-ndk-r27c just build x86_64      # API level 30
-ANDROID_NDK_HOME=/path/to/android-ndk-r27c just build arm64 30    # untested
+ANDROID_NDK_HOME=/path/to/android-ndk-r30 just build x86_64      # API level 30
+ANDROID_NDK_HOME=/path/to/android-ndk-r30 just build arm64 30
 ```
 
 The architecture is required; the API level defaults to 30. The recipe sets
@@ -79,18 +78,11 @@ level 30 lets the binary load on Android 11 and later; the AIDL interface it imp
 Android 13 anyway. The release profile links with LTO and strips the binary, so a clean build takes
 about 20 s and gives a position-independent executable of about 1 MB at
 `target/x86_64-linux-android/release/gpsd-binder`. INSTALLING.md describes how to install this.
-`rust-toolchain.toml` installs the x86_64 target; for arm64, run
-`rustup target add aarch64-linux-android` first.
+The arm64 binary builds the same way, but it has not yet run on a device.
 
 The binary may link only against LLNDK libraries, so that one build serves several Android
-releases. After every build, check that nothing else crept in:
-
-```sh
-$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-readelf -d \
-    target/x86_64-linux-android/release/gpsd-binder | grep NEEDED
-```
-
-The output must list only `libc.so` and `libdl.so`.
+releases. The recipe fails if `llvm-readelf -d` lists any `NEEDED` library other than `libc.so`
+and `libdl.so`.
 
 While the tests can run on a Linux or macOS host, there is no point in trying to build the binary for these platforms as it's tightly coupled to Android.
 
@@ -103,6 +95,21 @@ The following are also sometimes useful:
 - `just fmt` - Applies automatic formatting to Rust and TOML files. NOTE: Requires both nightly and stable `rustfmt`
 - `just fmtcheck` - Run all lints but don't actually compile a binary, so it's faster than a full build.
 - `just test` - Run Rust unit tests on the host. NOTE: Some tests require Docker.
+
+## CI and releases
+
+CI (`.github/workflows/ci.yml`) runs on every push to master and on every pull request:
+`just fmtcheck`, `just vibecheck`, `just depcheck`, `just test`, `cargo package`, and `just build`
+for both architectures. It runs just and the other tools through cgx (`cgx just vibecheck`), so
+it uses the versions in `cgx.toml`. Pull requests from forks run only after the maintainer has
+read them and approved the run.
+
+A release is made by pushing a tag `vX.Y.Z` on master. The tag runs
+`.github/workflows/release.yml`, which builds both architectures, creates a GitHub release with
+the archives that INSTALLING.md describes, and publishes the crate to crates.io.
+`.agents/skills/release/SKILL.md` lists every step; an agent can follow it as the `release`
+skill, and a person can follow it by hand. The release notes are the version's section of
+`CHANGELOG.md`, so record each notable change under `## [Unreleased]` when you make it.
 
 ## Troubleshooting
 

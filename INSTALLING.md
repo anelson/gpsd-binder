@@ -37,6 +37,13 @@ tar xzf gpsd-binder-<version>-x86_64-linux-android.tar.gz
 cd gpsd-binder-<version>-x86_64-linux-android
 ```
 
+Each archive also has a build provenance attestation, which shows that the release workflow in
+this repository built it. With the GitHub CLI:
+
+```sh
+gh attestation verify gpsd-binder-<version>-x86_64-linux-android.tar.gz --repo anelson/gpsd-binder
+```
+
 The directory holds:
 
 | Path                                                    | Purpose                                                    |

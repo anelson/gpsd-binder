@@ -29,43 +29,17 @@ the libraries of one Android release.
 ## Build
 
 ```
-rustup target add x86_64-linux-android
-ANDROID_NDK_HOME=/path/to/android-ndk-r27c scripts/build.sh x86_64 30
+ANDROID_NDK_HOME=/path/to/android-ndk-r27c just build x86_64
 ```
 
-`just build` runs the same. `just test` runs the unit tests on the build
-host; the gpsd module's test against a real gpsd needs a Docker daemon.
-`just fmt`, `just vibecheck` (compile, clippy and doc checks for the host and
-the Android target) and `just depcheck` must be clean before a change is
-offered; they need `taplo`, `ast-grep`, `typos`, `cargo-deny`, `cargo-machete`
-and a nightly `rustfmt`.
+[BUILDING.md](BUILDING.md) covers the toolchain, the NDK, the checks and
+the tests.
 
 ## Install
 
-| File                                                    | Installed as                                               |
-| ------------------------------------------------------- | ---------------------------------------------------------- |
-| `target/x86_64-linux-android/release/gpsd-binder`       | `/vendor/bin/hw/android.hardware.gnss-service.gpsd-binder` |
-| `android/android.hardware.gnss-service.gpsd-binder.rc`  | `/vendor/etc/init/`                                        |
-| `android/android.hardware.gnss-service.gpsd-binder.xml` | `/vendor/etc/vintf/manifest/`                              |
-
-Android looks for a GNSS driver only once, at boot, so restart Android after
-installing.
-
-## Configuration
-
-| Property            | Default     | Meaning                                            |
-| ------------------- | ----------- | -------------------------------------------------- |
-| `service.gpsd.host` | `127.0.0.1` | gpsd's IP address or host name, as Android sees it |
-| `service.gpsd.port` | `2947`      | gpsd's TCP port                                    |
-
-The driver reads both properties each time Android starts a GNSS session.
-To change them, add an init file of your own that sets them, for example in
-an `on early-boot` block.
-
-Any process that can open a TCP connection to gpsd can read positions
-without Android's location permission, and can send commands to gpsd. Where
-that matters, restrict which processes can connect.
-`waydroid/gpsd-access-guard.sh` does this with an iptables rule.
+Releases carry a ready-made build for x86_64 and arm64 Android.
+[INSTALLING.md](INSTALLING.md) describes how to install and configure it, on
+Android in general and on Waydroid.
 
 ## Integrations
 

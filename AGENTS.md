@@ -1,7 +1,7 @@
 # Notes for agents
 
-This file is for agents who work on gpsd-binder. README.md says
-what the project is and how to build and install it. This file records the
+This file is for agents who work on gpsd-binder. README.md says what the
+project is, BUILDING.md how to build it, and INSTALLING.md how to install it. This file records the
 requirements, the facts that cost effort to learn, and how to work on the
 code and on a test device.
 
@@ -35,42 +35,24 @@ Do not violate these. Ask the user before doing anything that comes close.
   anthropomorphize software. Match the comment density and idiom of the
   surrounding code.
 
-## Layout
-
-| Path          | Contents                                                                                                                                    |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/main.rs` | what is specific to the Android system: properties, the boot-time clock, logging to stderr                                                  |
-| `src/hal.rs`  | the `IGnss` service, its sessions, and the mapping from gpsd's reports to the AIDL types; unit tests of the mapping                          |
-| `src/gpsd/`   | the gpsd client: `protocol.rs` (report and request types), `connection.rs`, `feed.rs` (reconnecting loop); `testdata/` for the container test |
-| `build.rs`    | generates Rust bindings from the frozen AIDL files                                                                                          |
-| `aidl/`       | frozen `android.hardware.gnss` version 2 AIDL API and its hash, from AOSP (Apache-2.0); never edit                                          |
-| `android/`    | the driver's init file and VINTF manifest fragment, for `/vendor` on any Android                                                            |
-| `waydroid/`   | Waydroid integration: address-setting init file, access guard, host forwarder unit                                                          |
-| `justfile`    | the check recipes; `*.toml`, `sgconfig.yml` and `.ast-grep/` configure them (copied from the user's cgx project); `rust-toolchain.toml` pins the toolchain |
-
 ## Build and check
 
-```
-rustup target add x86_64-linux-android
-ANDROID_NDK_HOME=/path/to/android-ndk-r27c scripts/build.sh x86_64 30   # or: just build
-```
+BUILDING.md says what to install and what each `just` recipe does. The rules
+for agents:
 
 - `just fmt`, `just vibecheck` and `just depcheck` must pass completely clean,
-  with no warnings, before a change is presented. `vibecheck` runs ast-grep,
-  typos, `cargo check` and `cargo clippy -D warnings` for the host and for
-  `x86_64-linux-android`, and `cargo doc` with warnings as errors. `depcheck`
-  runs cargo-deny and cargo-machete. The tools (`just`, `taplo`, `ast-grep`,
-  `typos`, `cargo-deny`, `cargo-machete`) come from Homebrew or `cargo install`;
-  `fmt` also needs a nightly toolchain for `rustfmt-nightly.toml`.
-- `rust-toolchain.toml` pins Rust 1.89.0 and installs clippy, rustfmt,
-  rust-analyzer and the Android target; `rust-version` in `Cargo.toml` says
+  with no warnings, before a change is presented. After an Android build,
+  the `NEEDED` check in BUILDING.md must list only `libc.so` and `libdl.so`.
+- The check tools (`taplo`, `ast-grep`, `typos`, `cargo-deny`, `cargo-machete`) run
+  through `cgx`, the user's own tool; their versions are in `cgx.toml`. Do not
+  install them by hand or call them directly in the justfile.
+- `rust-toolchain.toml` pins Rust 1.89.0; `rust-version` in `Cargo.toml` says
   the same. The clippy lint names in `Cargo.toml` and the `#[expect]` list on
   the generated bindings are tied to that version (1.89 has already dropped
   cgx's `match_on_vec_items`; 1.96 renames `empty_enum` and drops
-  `string_to_string`). The
-  driver's real floor is 1.86, set by rsbinder 0.12; going there needs
-  cargo's MSRV-aware resolver, `ignore` pinned to 0.4.29 in the lock, and
-  testcontainers 0.25.
+  `string_to_string`). The driver's real floor is 1.86, set by rsbinder 0.12;
+  going there needs cargo's MSRV-aware resolver, `ignore` pinned to 0.4.29 in
+  the lock, and testcontainers 0.25.
 - The lints in `Cargo.toml`, `clippy.toml` and the ast-grep rules are the cgx
   project's. Suppress a lint with `#[expect(..., reason = "...")]`, never
   `#[allow]`; `unsafe_code` is forbidden (the boot-time clock comes from
@@ -78,29 +60,17 @@ ANDROID_NDK_HOME=/path/to/android-ndk-r27c scripts/build.sh x86_64 30   # or: ju
 - Unit tests live in `#[cfg(test)] mod tests` at the bottom of the file they
   test; there is no `tests/` directory. `just test` runs them on the host,
   including the gpsd module's test against a real gpsd and gpsfake in a
-  container (Docker, about 5 s once the image is built). The driver binary
-  itself cannot run on the host; the HAL's session logic needs a device.
+  container. The driver binary itself cannot run on the host; the HAL's
+  session logic needs a device.
 - Do not write hand-rolled parsers for standard formats; gpsd's time stamps
   are `chrono::DateTime<Utc>`. Nothing is stringly typed where it is up to us:
   gpsd's JSON is deserialized into the types in `src/gpsd/protocol.rs`, and
   the WATCH request is serialized from `Watch`.
-- The NDK in use is r27c (27.2.12479018). On macOS the `.dmg` holds the NDK
-  root at `AndroidNDK<build>.app/Contents/NDK`. The NDK ships universal
-  binaries under `toolchains/llvm/prebuilt/darwin-x86_64`, which
-  `scripts/build.sh` uses on both Intel and Apple silicon.
-- The linker is `x86_64-linux-android30-clang`. API level 30 lets the binary
-  load on Android 11 and later; the AIDL interface needs Android 13 anyway.
-- A release build takes about 20 s from clean and gives a stripped PIE of
-  about 1 MB. `cargo check` and `cargo clippy` for the Android target do not
-  need the NDK; only linking does.
-- After a build, check the dependencies:
-  `$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-readelf -d target/x86_64-linux-android/release/gpsd-binder | grep NEEDED`
-  must list only `libc.so` and `libdl.so`.
 - Do not build the driver binary for plain Linux: rsbinder then speaks only
   the Android 16 servicemanager protocol (see below). rsbinder and
   rsbinder-aidl do compile on macOS and Linux, which is what lets the unit
   tests run on the host.
-- arm64 (`scripts/build.sh arm64 30`) has not been built or tested.
+- arm64 (`just build arm64`) has not been built or tested.
 
 ## Android 13 GNSS framework
 

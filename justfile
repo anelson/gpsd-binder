@@ -1,25 +1,28 @@
+# The tools other than cargo and rustfmt run through cgx, which fetches the versions named in cgx.toml
+# on first use.
+
 # Format Rust and TOML. The nightly rustfmt pass applies rustfmt-nightly.toml (import grouping, comment
 # wrapping, and errors on lines it cannot format); the stable pass then applies the standard formatting,
 # which does not undo the nightly changes.
 fmt:
     cargo +nightly fmt -- --config-path rustfmt-nightly.toml
     cargo fmt
-    taplo fmt
+    cgx taplo fmt
 
 # Fail if anything is not formatted. For CI and precommit checks.
 fmtcheck:
     cargo fmt --check
-    taplo fmt --check
+    cgx taplo fmt --check
 
 # Structural lints that clippy cannot express. Rules live in .ast-grep/rules, their self-tests in
 # .ast-grep/rule-tests.
 ast-grep:
-    ast-grep test --skip-snapshot-tests
-    ast-grep scan
+    cgx ast-grep test --skip-snapshot-tests
+    cgx ast-grep scan
 
 # Spell-check source, comments, docs and text files. Overrides go in typos.toml.
 typos:
-    typos
+    cgx typos
 
 # Compile, clippy and doc checks, for the host (where the unit tests run) and for the Android target.
 # This must be completely clean before a change is presented for review.
@@ -31,16 +34,44 @@ vibecheck: ast-grep typos
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
 # Security advisories, licences and duplicate versions (cargo-deny), unused dependencies (cargo-machete).
+# cargo-machete is run by crate name: as `cgx cargo machete` it takes the subcommand word for a path,
+# because cgx does not set the CARGO variable that cargo-machete uses to recognize that it was started
+# by cargo.
 depcheck:
-    cargo deny check
-    cargo machete --with-metadata
+    cgx cargo deny check
+    cgx cargo-machete --with-metadata
 
 # The unit tests run on the host. The gpsd module's container test needs a Docker daemon.
 test:
     cargo test
 
-# Release build for Android. Needs ANDROID_NDK_HOME; see README.md.
-build arch="x86_64" api="30":
-    scripts/build.sh {{arch}} {{api}}
+# Release build for Android: `just build x86_64` or `just build arm64`, linked for Android API level
+# `api`. Needs ANDROID_NDK_HOME; see BUILDING.md. The NDK's clang for the target does the linking.
+[unix]
+build arch api="30":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{arch}}" in
+        x86_64) triple=x86_64-linux-android ;;
+        arm64)  triple=aarch64-linux-android ;;
+        *) echo "unknown architecture: {{arch}} (use x86_64 or arm64)" >&2; exit 2 ;;
+    esac
+    case "$(uname -s)" in
+        Darwin) host=darwin-x86_64 ;;   # the NDK ships universal binaries under this name
+        Linux)  host=linux-x86_64 ;;
+        *) echo "unsupported build host: $(uname -s)" >&2; exit 2 ;;
+    esac
+    ndk="${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME to the NDK root directory}"
+    linker="$ndk/toolchains/llvm/prebuilt/$host/bin/${triple}{{api}}-clang"
+    [ -x "$linker" ] || { echo "linker not found: $linker" >&2; exit 1; }
+    if ! rustup target list --installed | grep -qx "$triple"; then
+        echo "Rust target $triple is not installed; run: rustup target add $triple" >&2
+        exit 1
+    fi
+    cd "{{justfile_directory()}}"
+    export "CARGO_TARGET_$(echo "$triple" | tr 'a-z-' 'A-Z_')_LINKER=$linker"
+    cargo build --release --target "$triple"
+    echo "built: $(pwd)/target/$triple/release/gpsd-binder"
+    echo "install as: /vendor/bin/hw/android.hardware.gnss-service.gpsd-binder"
 
 precommit: fmt vibecheck depcheck test

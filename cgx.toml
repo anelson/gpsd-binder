@@ -1,0 +1,15 @@
+# The tools that the justfile runs through cgx, with the versions in use. These are Cargo-style
+# version requirements, not exact pins: "0.10.0" allows any 0.10.x from 0.10.0 up. `cgx --list-tools`
+# shows the merged configuration and `cgx --prefetch-all` fetches everything ahead of time.
+
+[tools]
+ast-grep      = "0.51.0"
+cargo-deny    = "0.20.2"
+cargo-machete = "0.9.2"
+taplo-cli     = "0.10.0"
+typos-cli     = "1.51.1"
+
+# The binaries are not named after their crates.
+[aliases]
+taplo = "taplo-cli"
+typos = "typos-cli"

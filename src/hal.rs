@@ -7,7 +7,7 @@
 //! operation", which Android records as absent.
 
 use std::{
-    net::SocketAddr,
+    io,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard, PoisonError,
@@ -47,9 +47,8 @@ use gen::android::hardware::gnss as g;
 
 pub(crate) const SERVICE_NAME: &str = "android.hardware.gnss.IGnss/default";
 
-/// Where gpsd is. Asked before every connection attempt, so that a changed setting takes effect at
-/// the next one.
-pub(crate) type AddressFn = fn() -> Option<SocketAddr>;
+/// Opens a new stream to gpsd, for each connection attempt.
+pub(crate) type OpenFn = fn() -> io::Result<Box<dyn gpsd::Stream>>;
 
 /// Time since boot, including time spent suspended: Android's `ElapsedRealtime`. It also drives the
 /// feed's stale-gap check.
@@ -84,17 +83,17 @@ struct Gnss {
     /// starts to listen for NMEA and when the last one stops, with or without a session, so the
     /// setting holds across sessions.
     nmea: Arc<AtomicBool>,
-    address: AddressFn,
+    open: OpenFn,
     clock: ClockFn,
 }
 
 /// The service object to register as [`SERVICE_NAME`].
-pub(crate) fn new_service(address: AddressFn, clock: ClockFn) -> Strong<dyn IGnss> {
+pub(crate) fn new_service(open: OpenFn, clock: ClockFn) -> Strong<dyn IGnss> {
     BnGnss::new_binder(Gnss {
         callback: Callback::default(),
         session: Arc::new(AtomicU64::new(0)),
         nmea: Arc::new(AtomicBool::new(false)),
-        address,
+        open,
         clock,
     })
 }
@@ -206,14 +205,14 @@ impl Session {
         self.current_session.load(Ordering::SeqCst) == self.number
     }
 
-    fn run(self, address: AddressFn) {
+    fn run(self, open: OpenFn) {
         let me = self.number;
         let stop = {
             let session = Arc::clone(&self.current_session);
             move || session.load(Ordering::SeqCst) != me
         };
         let feed = gpsd::Feed::new(
-            address,
+            open,
             gpsd::Watch::default(),
             gpsd::Config::default(),
             stop,
@@ -226,13 +225,11 @@ impl Session {
                 break;
             }
             match event {
-                Event::Connected { addr, version } => {
-                    log::info!("session {me}: connected to gpsd {} at {addr}", version.release);
+                Event::Connected(version) => {
+                    log::info!("session {me}: connected to gpsd {}", version.release);
                 }
-                Event::ConnectFailed { addr, error } => {
-                    log::warn!("session {me}: connect {addr} failed: {error}");
-                }
-                Event::Disconnected { addr, reason } => log::info!("session {me}: {addr}: {reason}"),
+                Event::ConnectFailed(error) => log::warn!("session {me}: connect failed: {error}"),
+                Event::Disconnected(reason) => log::info!("session {me}: {reason}"),
                 Event::Report(Report::Devices(devices)) => {
                     for device in &devices.devices {
                         log::info!("session {me}: gpsd has {device}");
@@ -281,9 +278,7 @@ impl Session {
                     }
                 }
                 Event::Report(Report::Error(e)) => log::warn!("session {me}: gpsd: {}", e.message),
-                // The address function logs a bad setting itself.
-                Event::NoAddress
-                | Event::Report(
+                Event::Report(
                     Report::Version(_) | Report::Device(_) | Report::Watch(_) | Report::Unknown,
                 ) => {}
             }
@@ -371,8 +366,8 @@ impl IGnss for Gnss {
             callback: self.callback.clone(),
             clock: self.clock,
         };
-        let address = self.address;
-        thread::spawn(move || session.run(address));
+        let open = self.open;
+        thread::spawn(move || session.run(open));
         Ok(())
     }
 

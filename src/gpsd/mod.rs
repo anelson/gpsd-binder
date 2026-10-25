@@ -1,4 +1,4 @@
-//! Client for gpsd's JSON protocol over TCP.
+//! Client for gpsd's JSON protocol over an arbitrary byte stream.
 //!
 //! [`protocol`] holds the report and request types, [`connection`] one connection to gpsd, and
 //! [`feed`] the reconnecting loop that the driver runs on a thread. Nothing here knows about
@@ -8,6 +8,7 @@ mod connection;
 mod feed;
 pub(crate) mod protocol;
 
+pub use connection::Stream;
 pub(crate) use feed::{Config, Event, Feed};
 pub(crate) use protocol::{GnssId, Report, Satellite, SatelliteId, Tpv, Watch};
 
@@ -16,7 +17,7 @@ pub(crate) use protocol::{GnssId, Report, Satellite, SatelliteId, Tpv, Watch};
 #[cfg(test)]
 mod tests {
     use std::{
-        io::{BufRead, BufReader, Read, Write},
+        io::{self, BufRead, BufReader, Read, Write},
         net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
         path::Path,
         sync::{
@@ -38,6 +39,12 @@ mod tests {
         protocol::MIN_PROTO_MAJOR,
         *,
     };
+
+    impl Stream for TcpStream {
+        fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+            TcpStream::set_read_timeout(self, timeout)
+        }
+    }
 
     /// One step of a fake gpsd's script. Each accepted connection runs one script and then closes.
     pub(super) enum Step {
@@ -87,6 +94,11 @@ mod tests {
             }
         }
 
+        /// A new connection to the fake.
+        pub(super) fn stream(&self) -> Box<dyn Stream> {
+            tcp(self.addr).unwrap()
+        }
+
         /// Every request line received so far, over all connections.
         pub(super) fn requests(&self) -> Vec<String> {
             self.requests.lock().unwrap().clone()
@@ -103,6 +115,10 @@ mod tests {
             }
             true
         }
+    }
+
+    pub(super) fn tcp(addr: SocketAddr) -> io::Result<Box<dyn Stream>> {
+        Ok(Box::new(TcpStream::connect(addr)?))
     }
 
     fn serve(stream: TcpStream, script: Vec<Step>, requests: &Mutex<Vec<String>>) {
@@ -149,10 +165,10 @@ mod tests {
     /// are bounded by Docker and testcontainers.
     const DEADLINE: Duration = Duration::from_secs(60);
 
-    /// The whole module against a real gpsd, fed by gpsfake in a container. Needs a running Docker
-    /// daemon; see testdata/README.md.
+    /// The whole module against a real gpsd fed by gpsfake in a container.
+    /// Needs a running Docker daemon; see testdata/README.md.
     #[test]
-    fn real_gpsd_over_tcp() {
+    fn real_gpsd() {
         let testdata = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gpsd/testdata");
         let image = GenericBuildableImage::new("gpsd-binder-test-gpsd", "trixie")
             .with_dockerfile(testdata.join("Dockerfile"))
@@ -173,7 +189,7 @@ mod tests {
         let stop_flag = Arc::clone(&stop);
         let started = Instant::now();
         let mut feed = Feed::new(
-            move || Some(addr),
+            move || tcp(addr),
             Watch::default(),
             Config::default(),
             move || stop_flag.load(Ordering::SeqCst),
@@ -190,7 +206,7 @@ mod tests {
                 || gga.is_none())
         {
             match feed.next().expect("the feed ended") {
-                Event::Connected { version: v, .. } => version = Some(v),
+                Event::Connected(v) => version = Some(v),
                 Event::Report(Report::Devices(d)) => devices = Some(d),
                 Event::Report(Report::Watch(w)) => watch = Some(w),
                 // gpsd also reports fixes without a time stamp, from sentences that carry no date; the
@@ -272,7 +288,7 @@ mod tests {
     }
 
     fn connect(addr: SocketAddr, watch: &Watch) -> Connection {
-        Connection::connect(addr, watch, Duration::from_secs(3), Duration::from_secs(1)).unwrap()
+        Connection::open(tcp(addr).unwrap(), watch, Duration::from_secs(1)).unwrap()
     }
 
     /// Reads until a report satisfies `wanted`, skipping the others.

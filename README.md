@@ -18,13 +18,20 @@ to one environment are kept separate from it (see [Integrations](#integrations))
 ## Requirements
 
 - **Android 13 or later.** Android 12 and earlier cannot use a GNSS driver
-  that implements only the AIDL interface. Only Android 13 has been tested.
-- **SELinux disabled or permissive.** There is no SELinux policy for the
-  driver yet. Waydroid runs Android with SELinux disabled.
-- **x86_64 or arm64.** Only x86_64 has been tested.
+  that implements only the AIDL interface. Android 13, 16 and 17 have been
+  tested in arm64 AOSP emulator images with SELinux enforcing.
+- **Root access to install vendor files and SELinux policy.** Policy is
+  supplied in `android/sepolicy/`. Android 17 also needs the supplied
+  system permission file for network access. Waydroid with Android 13 has
+  SELinux disabled and needs neither.
+- **x86_64 or arm64.** x86_64 was tested on Waydroid with the earlier
+  single-program build; the current two-program build was tested on arm64
+  in the emulator. Physical arm64 devices have not been tested.
 
-The program needs only `libc.so` and `libdl.so`, so it does not depend on
-the libraries of one Android release.
+The GNSS service starts a separate relay process for TCP: Android's SELinux
+rules forbid HAL servers from using TCP sockets. Both programs need only
+`libc.so`, `libdl.so` and `liblog.so`, so they do not depend on the libraries
+of one Android release.
 
 ## Build
 
@@ -39,7 +46,7 @@ the tests.
 
 Releases carry a ready-made build for x86_64 and arm64 Android.
 [INSTALLING.md](INSTALLING.md) describes how to install and configure it, on
-Android in general and on Waydroid.
+the Android emulator, Waydroid on Linux, and other Android devices.
 
 ## Integrations
 

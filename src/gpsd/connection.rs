@@ -1,10 +1,9 @@
-//! One TCP connection to gpsd: the WATCH request on the way in, reports and NMEA sentences read one
+//! One connection to gpsd: the WATCH request on the way in, reports and NMEA sentences read one
 //! line at a time on the way out.
 
 use std::{
     fmt,
     io::{self, BufRead, BufReader, Read, Write},
-    net::{SocketAddr, TcpStream},
     time::Duration,
 };
 
@@ -23,12 +22,18 @@ pub(crate) enum Line {
     Nmea(String),
 }
 
+/// An owned byte stream to gpsd: a TCP connection, or a socket to a process that relays one.
+/// Dropping the stream releases the transport and any resources it owns.
+pub trait Stream: Read + Write + Send {
+    /// Bounds each read, as [`std::net::TcpStream::set_read_timeout`] does.
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+}
+
 pub(crate) struct Connection {
-    reader: BufReader<TcpStream>,
+    reader: BufReader<Box<dyn Stream>>,
     /// The line being read. A read timeout leaves a partial line here, and the next read appends
     /// the rest.
     line: Vec<u8>,
-    peer: SocketAddr,
 }
 
 #[derive(Debug)]
@@ -58,7 +63,7 @@ pub(crate) enum ReadError {
     /// No complete line arrived within the read timeout. The connection is still usable, and a
     /// partial line is kept for the next read.
     Timeout,
-    /// gpsd closed the connection.
+    /// The other end closed the connection.
     Closed,
     Io(io::Error),
     /// A complete line that is neither a JSON report nor an NMEA sentence. The connection is still
@@ -77,7 +82,7 @@ impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ReadError::Timeout => write!(f, "no complete line within the read timeout"),
-            ReadError::Closed => write!(f, "gpsd closed the connection"),
+            ReadError::Closed => write!(f, "connection to gpsd closed"),
             ReadError::Io(e) => write!(f, "{e}"),
             ReadError::Parse { line, error } => write!(f, "not a report ({error}): {line}"),
             ReadError::LineTooLong => write!(f, "line longer than {MAX_LINE_LEN} bytes"),
@@ -91,29 +96,21 @@ impl fmt::Display for ReadError {
 }
 
 impl Connection {
-    /// Connects and sends the WATCH request. gpsd's VERSION banner and its answers to the request
-    /// come back through [`Connection::read`], like every other report, so the caller sees the
-    /// device list.
-    pub(crate) fn connect(
-        addr: SocketAddr,
+    /// Sends the WATCH request on a new stream. gpsd's VERSION banner and its answers to the
+    /// request come back through [`Connection::read`], like every other report, so the caller sees
+    /// the device list.
+    pub(crate) fn open(
+        mut stream: Box<dyn Stream>,
         watch: &Watch,
-        connect_timeout: Duration,
         read_timeout: Duration,
     ) -> Result<Connection, ConnectError> {
         let request = watch.request().map_err(ConnectError::Request)?;
-        let mut stream = TcpStream::connect_timeout(&addr, connect_timeout)?;
         stream.set_read_timeout(Some(read_timeout))?;
-        stream.set_write_timeout(Some(connect_timeout))?;
         stream.write_all(request.as_bytes())?;
         Ok(Connection {
             reader: BufReader::new(stream),
             line: Vec::new(),
-            peer: addr,
         })
-    }
-
-    pub(crate) fn peer(&self) -> SocketAddr {
-        self.peer
     }
 
     /// The next report or NMEA sentence. Blank lines are skipped. A line that begins with `$` is an
@@ -177,11 +174,10 @@ mod tests {
         *,
     };
 
-    const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
     const READ_TIMEOUT: Duration = Duration::from_millis(100);
 
     fn connect(fake: &FakeGpsd, watch: &Watch) -> Connection {
-        Connection::connect(fake.addr, watch, CONNECT_TIMEOUT, READ_TIMEOUT).unwrap()
+        Connection::open(fake.stream(), watch, READ_TIMEOUT).unwrap()
     }
 
     /// Reads past timeouts until something else happens.
@@ -206,7 +202,6 @@ mod tests {
             Step::WaitForClose,
         ]]);
         let mut conn = connect(&fake, &Watch::default());
-        assert_eq!(conn.peer(), fake.addr);
         assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Version(v))) if v.release == "3.25"));
         assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Devices(d))) if d.devices.len() == 1));
         assert!(matches!(read(&mut conn), Ok(Line::Json(Report::Watch(w))) if w.enable && w.json));
@@ -324,14 +319,15 @@ mod tests {
     }
 
     #[test]
-    fn overlong_request_fails_before_connecting() {
-        let fake = FakeGpsd::start(vec![]);
+    fn overlong_request_fails_before_sending() {
+        let fake = FakeGpsd::start(vec![vec![Step::ExpectRequest("")]]);
         let watch = Watch {
             device: Some(format!("/dev/{}", "d".repeat(100))),
             ..Watch::default()
         };
-        let result = Connection::connect(fake.addr, &watch, CONNECT_TIMEOUT, READ_TIMEOUT);
+        let result = Connection::open(fake.stream(), &watch, READ_TIMEOUT);
         assert!(matches!(result, Err(ConnectError::Request(RequestTooLong(_)))));
-        assert!(!fake.wait_closed(1, Duration::from_millis(200)));
+        assert!(fake.wait_closed(1, Duration::from_secs(2)));
+        assert!(fake.requests().is_empty());
     }
 }

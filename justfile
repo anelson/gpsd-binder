@@ -48,7 +48,7 @@ test:
 
 # Release build for Android: `just build x86_64` or `just build arm64`, linked for Android API level
 # `api`. Needs ANDROID_NDK_HOME; see BUILDING.md. The NDK's clang for the target does the linking.
-# The recipe fails if the binary needs any library other than libc.so and libdl.so.
+# The recipe fails if either program needs any library other than libc.so, libdl.so and liblog.so.
 [unix]
 build arch api="30":
     #!/usr/bin/env bash
@@ -74,13 +74,17 @@ build arch api="30":
     cd "{{justfile_directory()}}"
     export "CARGO_TARGET_$(echo "$triple" | tr 'a-z-' 'A-Z_')_LINKER=$linker"
     cargo build --release --target "$triple"
-    binary="target/$triple/release/gpsd-binder"
-    needed="$("$bin/llvm-readelf" -d "$binary" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p' | sort | tr '\n' ' ')"
-    if [ "$needed" != "libc.so libdl.so " ]; then
-        echo "$binary needs libraries other than libc.so and libdl.so: $needed" >&2
-        exit 1
-    fi
-    echo "built: $(pwd)/$binary"
-    echo "install as: /vendor/bin/hw/android.hardware.gnss-service.gpsd-binder"
+    for program in gpsd-binder gpsd-binder-relay; do
+        binary="target/$triple/release/$program"
+        needed="$("$bin/llvm-readelf" -d "$binary" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p' | sort | tr '\n' ' ')"
+        if [ "$needed" != "libc.so libdl.so liblog.so " ]; then
+            echo "$binary needs libraries other than libc.so, libdl.so and liblog.so: $needed" >&2
+            exit 1
+        fi
+    done
+    echo "built: $(pwd)/target/$triple/release/gpsd-binder"
+    echo "  install as /vendor/bin/hw/android.hardware.gnss-service.gpsd-binder"
+    echo "built: $(pwd)/target/$triple/release/gpsd-binder-relay"
+    echo "  install as /vendor/bin/gpsd-binder-relay"
 
 precommit: fmt vibecheck depcheck test

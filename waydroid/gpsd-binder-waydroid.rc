@@ -8,7 +8,7 @@ on early-boot
     setprop vendor.gpsd.host 192.168.240.1
     setprop vendor.gpsd.port 2947
 
-# Access guard: only uid 0 may open TCP to gpsd (see gpsd-access-guard.sh).
+# Access guard: only uid gps (1021) may open TCP to gpsd (see gpsd-access-guard.sh).
 # First at post-fs-data, before zygote starts any app; init waits for it.
 on post-fs-data
     exec - root root -- /system/bin/sh /vendor/bin/gpsd-access-guard.sh post-fs-data

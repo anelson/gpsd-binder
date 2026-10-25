@@ -9,17 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SELinux policy for enforcing Android images, with separate domains for
+  the GNSS service and its TCP relay, plus a neverallow check script.
+- Android emulator installation instructions, separate from the Waydroid
+  guide, including policy installation, upgrades and removal.
+- A system permission file for Android 17's native-uid network checks. It
+  grants `INTERNET` and `ACCESS_LOCAL_NETWORK` to uid `gps`.
 - NMEA sentences. The driver asks gpsd for NMEA as well as JSON, and passes
   each sentence to Android unchanged while an app listens for NMEA.
 
 ### Changed
 
+- The service starts `gpsd-binder-relay` for each connection to gpsd.
+  Android forbids HAL servers from using TCP sockets, so only the relay
+  connects to the network. Both programs are required at installation.
+- Both programs run as Android's `gps` user (1021), not root. The Waydroid
+  access guard admits that uid instead of uid 0.
+- Logs go to Android's logcat under `gpsd-binder` and `gpsd-binder-relay`,
+  not to the kernel log. Both programs now also link against `liblog.so`.
 - The driver reports the scheduling capability, so Android keeps it running
   between fixes instead of stopping and restarting it for apps that ask for
   a location less often than every 10 seconds.
 
 ### Fixed
 
+- A fix without a horizontal accuracy no longer reaches Android. Android 13
+  throws an exception in system_server on such a location, and the whole
+  framework restarts. gpsd sends one when a receiver's RMC sentence comes
+  before the GGA and GSA sentences of the same cycle.
 - Satellite numbers. QZSS satellites have their PRNs (193 and up), as
   Android expects. Satellites from receivers whose gpsd driver gives one
   number over all constellations (GeoStar, NavCom, NMEA 2000, Oncore,

@@ -118,7 +118,9 @@ jobs:
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: gpsd-binder-${{ matrix.triple }}
-          path: target/${{ matrix.triple }}/release/gpsd-binder
+          path: |
+            target/${{ matrix.triple }}/release/gpsd-binder
+            target/${{ matrix.triple }}/release/gpsd-binder-relay
           if-no-files-found: error
           retention-days: 14
 

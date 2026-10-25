@@ -1,0 +1,2 @@
+vendor.gpsd.host  u:object_r:vendor_gpsd_binder_prop:s0 exact string
+vendor.gpsd.port  u:object_r:vendor_gpsd_binder_prop:s0 exact int

@@ -1,11 +1,11 @@
 #!/system/bin/sh
-# gpsd-access-guard.sh - let only uid 0 open TCP connections to host gpsd.
+# gpsd-access-guard.sh - let only uid gps (1021) open TCP connections to host gpsd.
 #
-# The GNSS driver (gpsd-binder) runs as uid 0. Without this rule every
-# Android process, including apps that have no location permission, could
-# open 192.168.240.1:2947 and read raw positions or send commands to gpsd.
+# The driver's relay runs as uid gps (1021). Without this rule every Android
+# process, including apps that have no location permission, could open
+# 192.168.240.1:2947 and read raw positions or send commands to gpsd.
 # The rule answers such a connection with a TCP reset unless the socket
-# belongs to uid 0.
+# belongs to uid 1021.
 #
 # Where the rule is kept (IPv4 filter table):
 #   chain gpsd_guard          netd does not know this chain and never flushes it.
@@ -21,12 +21,12 @@
 # guarded always because the first run, at post-fs-data, comes before the
 # early-boot trigger that sets the properties.
 #
-# Why "--uid-owner 1-4294967294" and not "! --uid-owner 0": after a socket is
+# Why positive uid ranges and not "! --uid-owner 1021": after a socket is
 # closed, the kernel still sends packets for it (the final ACK, or a reset),
 # and those packets have no owner. A negated match catches packets with no
 # owner, so it reset the forwarder's end of every closed HAL connection and
 # left that end retransmitting for minutes. A positive range never matches a
-# packet with no owner, and still matches every socket owned by uid 1 or more.
+# packet with no owner. Two ranges cover every uid except 1021.
 #
 # The script is idempotent. It replaces the chain in one iptables-restore
 # transaction, adds the jump only when it is missing, and holds a lock so that
@@ -46,7 +46,9 @@ WHY=${1:-manual}
 say() { log -t "$TAG" -p "$1" "$2"; echo "$2"; }
 
 rule() {
-    echo "-A $CHAIN -d $1/32 -p tcp -m tcp --dport $2 -m owner --uid-owner 1-4294967294 -j REJECT --reject-with tcp-reset"
+    for uids in 0-1020 1022-4294967294; do
+        echo "-A $CHAIN -d $1/32 -p tcp -m tcp --dport $2 -m owner --uid-owner $uids -j REJECT --reject-with tcp-reset"
+    done
 }
 is_ipv4() {
     case "$1" in
@@ -93,7 +95,7 @@ $(rule "$h" "$p")"
             exit 1
         fi
     fi
-    say i "($WHY) $CHAIN active: TCP to $guarded is reset for every uid except 0"
+    say i "($WHY) $CHAIN active: TCP to $guarded is reset for every uid except gps (1021)"
     return 0
 }
 

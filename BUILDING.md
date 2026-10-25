@@ -4,8 +4,8 @@ If you just want to run `gpsd-binder` on an Android device, you don't need to
 go through the steps below, just download a binary from the Releases page on
 this Github repo, or see [INSTALLING.md](INSTALLING.md).
 
-gpsd-binder is a Rust program cross-compiled for Android with the Android NDK. `just` is the task
-runner: the recipes in `justfile` are the documented way to build, check and test, and they capture
+gpsd-binder has two Rust programs, the GNSS service and its TCP relay, cross-compiled for Android
+with the Android NDK. `just` is the task runner: the recipes in `justfile` are the documented way to build, check and test, and they capture
 the details that plain `cargo` commands would not. Raw `cargo` works for everything except linking
 the Android binary, which needs the NDK linker that the `build` recipe sets up.
 
@@ -76,13 +76,14 @@ The architecture is required; the API level defaults to 30. The recipe sets
 `x86_64-linux-android30-clang` and runs `cargo build --release --target x86_64-linux-android`. API
 level 30 lets the binary load on Android 11 and later; the AIDL interface it implements needs
 Android 13 anyway. The release profile links with LTO and strips the binary, so a clean build takes
-about 20 s and gives a position-independent executable of about 1 MB at
-`target/x86_64-linux-android/release/gpsd-binder`. INSTALLING.md describes how to install this.
-The arm64 binary builds the same way, but it has not yet run on a device.
+about 20 s and produces `gpsd-binder` and `gpsd-binder-relay` under
+`target/x86_64-linux-android/release/`. Both are required; [INSTALLING.md](INSTALLING.md)
+describes their install paths. The arm64 programs build the same way and have run in the
+Android 13, 16 and 17 emulators, but not on a physical arm64 device.
 
-The binary may link only against LLNDK libraries, so that one build serves several Android
-releases. The recipe fails if `llvm-readelf -d` lists any `NEEDED` library other than `libc.so`
-and `libdl.so`.
+The programs may link only against LLNDK libraries, so that one build serves several Android
+releases. The recipe checks both programs with `llvm-readelf -d` and fails unless their `NEEDED`
+entries are exactly `libc.so`, `libdl.so` and `liblog.so`.
 
 While the tests can run on a Linux or macOS host, there is no point in trying to build the binary for these platforms as it's tightly coupled to Android.
 

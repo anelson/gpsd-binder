@@ -1,0 +1,85 @@
+; SELinux policy for gpsd-binder, in CIL, the form in which a built device keeps its policy. Add it
+; to the device's odm or vendor policy; INSTALLING.md says how.
+;
+; Two domains, because Android forbids every HAL server any use of a TCP socket
+; (system/sepolicy hal_neverallows.te):
+; - hal_gnss_gpsd_binder: the GNSS service. It registers IGnss/default, so it must be a hal_gnss
+;   server, and it has no network access.
+; - gpsd_binder_relay: the relay that the service starts for each connection to gpsd. It is not a
+;   HAL, so it may use the network.
+; One property type, vendor_gpsd_binder_prop, holds vendor.gpsd.host and vendor.gpsd.port.
+;
+; Each block is the expansion of the AOSP policy statements in the comment above it. Platform
+; types (init, vendor_init) are named without the vendor policy's version suffix (init, not
+; init_33_0), so that one file serves every Android release.
+
+; type hal_gnss_gpsd_binder, domain;
+; hal_server_domain(hal_gnss_gpsd_binder, hal_gnss)
+(type hal_gnss_gpsd_binder)
+(roletype object_r hal_gnss_gpsd_binder)
+(typeattributeset domain (hal_gnss_gpsd_binder))
+(typeattributeset halserverdomain (hal_gnss_gpsd_binder))
+(typeattributeset hal_gnss_server (hal_gnss_gpsd_binder))
+(typeattributeset hal_gnss (hal_gnss_gpsd_binder))
+
+; type hal_gnss_gpsd_binder_exec, exec_type, vendor_file_type, file_type;
+(type hal_gnss_gpsd_binder_exec)
+(roletype object_r hal_gnss_gpsd_binder_exec)
+(typeattributeset exec_type (hal_gnss_gpsd_binder_exec))
+(typeattributeset vendor_file_type (hal_gnss_gpsd_binder_exec))
+(typeattributeset file_type (hal_gnss_gpsd_binder_exec))
+
+; init_daemon_domain(hal_gnss_gpsd_binder)
+(allow init hal_gnss_gpsd_binder_exec (file (read getattr map execute open)))
+(allow init hal_gnss_gpsd_binder (process (transition)))
+(allow hal_gnss_gpsd_binder hal_gnss_gpsd_binder_exec (file (read getattr map execute open entrypoint)))
+(dontaudit init hal_gnss_gpsd_binder (process (noatsecure)))
+(allow init hal_gnss_gpsd_binder (process (siginh rlimitinh)))
+(typetransition init hal_gnss_gpsd_binder_exec process hal_gnss_gpsd_binder)
+
+; type gpsd_binder_relay, domain;
+; net_domain(gpsd_binder_relay)
+(type gpsd_binder_relay)
+(roletype object_r gpsd_binder_relay)
+(typeattributeset domain (gpsd_binder_relay))
+(typeattributeset netdomain (gpsd_binder_relay))
+
+; type gpsd_binder_relay_exec, exec_type, vendor_file_type, file_type;
+(type gpsd_binder_relay_exec)
+(roletype object_r gpsd_binder_relay_exec)
+(typeattributeset exec_type (gpsd_binder_relay_exec))
+(typeattributeset vendor_file_type (gpsd_binder_relay_exec))
+(typeattributeset file_type (gpsd_binder_relay_exec))
+
+; domain_auto_trans(hal_gnss_gpsd_binder, gpsd_binder_relay_exec, gpsd_binder_relay)
+(allow hal_gnss_gpsd_binder gpsd_binder_relay_exec (file (read getattr map execute open)))
+(allow hal_gnss_gpsd_binder gpsd_binder_relay (process (transition)))
+(allow gpsd_binder_relay gpsd_binder_relay_exec (file (read getattr map execute open entrypoint)))
+(allow gpsd_binder_relay hal_gnss_gpsd_binder (process (sigchld)))
+(dontaudit hal_gnss_gpsd_binder gpsd_binder_relay (process (noatsecure)))
+(allow hal_gnss_gpsd_binder gpsd_binder_relay (process (siginh rlimitinh)))
+(typetransition hal_gnss_gpsd_binder gpsd_binder_relay_exec process gpsd_binder_relay)
+
+; The relay's standard input is the service's end of a Unix socket pair, and the service ends the
+; relay when it closes the connection.
+; allow gpsd_binder_relay hal_gnss_gpsd_binder:fd use;
+; allow gpsd_binder_relay hal_gnss_gpsd_binder:unix_stream_socket { getattr read write shutdown };
+; allow hal_gnss_gpsd_binder gpsd_binder_relay:process sigkill;
+(allow gpsd_binder_relay hal_gnss_gpsd_binder (fd (use)))
+(allow gpsd_binder_relay hal_gnss_gpsd_binder (unix_stream_socket (getattr read write shutdown)))
+(allow hal_gnss_gpsd_binder gpsd_binder_relay (process (sigkill)))
+
+; vendor_internal_prop(vendor_gpsd_binder_prop)
+(type vendor_gpsd_binder_prop)
+(roletype object_r vendor_gpsd_binder_prop)
+(typeattributeset property_type (vendor_gpsd_binder_prop))
+(typeattributeset vendor_property_type (vendor_gpsd_binder_prop))
+(typeattributeset vendor_internal_property_type (vendor_gpsd_binder_prop))
+
+; get_prop(gpsd_binder_relay, vendor_gpsd_binder_prop)
+(allow gpsd_binder_relay vendor_gpsd_binder_prop (file (read getattr map open)))
+
+; set_prop(vendor_init, vendor_gpsd_binder_prop), for setprop in a vendor init file. The platform
+; policy already lets vendor_init reach the property service.
+(allow vendor_init vendor_gpsd_binder_prop (property_service (set)))
+(allow vendor_init vendor_gpsd_binder_prop (file (read getattr map open)))

@@ -1,16 +1,15 @@
 //! The reconnecting read loop: connects to gpsd, hands out reports and NMEA sentences, and connects
 //! again when the connection fails or goes stale.
 
-use std::{fmt, io, net::SocketAddr, thread, time::Duration};
+use std::{fmt, io, thread, time::Duration};
 
 use super::{
-    connection::{ConnectError, Connection, Line, ReadError},
+    connection::{ConnectError, Connection, Line, ReadError, Stream},
     protocol::{Report, Version, Watch},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Config {
-    pub(crate) connect_timeout: Duration,
     /// Also bounds how long a stop request can go unnoticed while nothing arrives from gpsd.
     pub(crate) read_timeout: Duration,
     /// A longer gap between two returns from a read means that the thread was not reading: the
@@ -22,19 +21,15 @@ pub(crate) struct Config {
     pub(crate) reconnect_pause: Duration,
     /// Pauses are slept in slices this long, checking for a stop request between slices.
     pub(crate) pause_slice: Duration,
-    /// Pause when the address closure gives no address.
-    pub(crate) bad_address_pause: Duration,
 }
 
 impl Default for Config {
     fn default() -> Config {
         Config {
-            connect_timeout: Duration::from_secs(3),
             read_timeout: Duration::from_secs(1),
             stale_gap: Duration::from_secs(3),
             reconnect_pause: Duration::from_secs(2),
             pause_slice: Duration::from_millis(200),
-            bad_address_pause: Duration::from_secs(5),
         }
     }
 }
@@ -42,31 +37,20 @@ impl Default for Config {
 #[derive(Debug)]
 pub(crate) enum Event {
     /// A connection is up and gpsd has sent its VERSION banner.
-    Connected {
-        addr: SocketAddr,
-        version: Version,
-    },
+    Connected(Version),
     Report(Report),
     /// An NMEA sentence, line ending included.
     Nmea(String),
-    /// The address closure gave no address. The feed pauses and asks again.
-    NoAddress,
     /// A connection attempt failed. The feed pauses and tries again.
-    ConnectFailed {
-        addr: SocketAddr,
-        error: ConnectError,
-    },
+    ConnectFailed(ConnectError),
     /// The connection was dropped. The feed connects again, at once after a stale gap and after a
     /// pause otherwise.
-    Disconnected {
-        addr: SocketAddr,
-        reason: Disconnect,
-    },
+    Disconnected(Disconnect),
 }
 
 #[derive(Debug)]
 pub(crate) enum Disconnect {
-    /// gpsd closed the connection.
+    /// The other end closed the connection.
     Closed,
     /// Too long between two reads; see [`Config::stale_gap`]. Closing the connection discards
     /// everything queued for it, and gpsd answers a new WATCH with no stored reports, so all
@@ -111,8 +95,8 @@ impl fmt::Display for Disconnect {
 /// closure returns true. Closing the connection is how a client stops watching; gpsd treats it the
 /// same as a WATCH request with `enable` false.
 pub(crate) struct Feed {
-    /// Asked before every connection attempt, so that the address can change between attempts.
-    address: Box<dyn FnMut() -> Option<SocketAddr> + Send>,
+    /// Opens a new stream to gpsd for each connection attempt.
+    open: Box<dyn FnMut() -> io::Result<Box<dyn Stream>> + Send>,
     watch: Watch,
     config: Config,
     /// Checked after every read and during every pause.
@@ -144,11 +128,7 @@ struct Open {
 enum Step {
     Continue,
     Emit(Event),
-    Drop {
-        addr: SocketAddr,
-        reason: Disconnect,
-        pause: bool,
-    },
+    Drop { reason: Disconnect, pause: bool },
 }
 
 impl Open {
@@ -158,25 +138,19 @@ impl Open {
         // between reads: a process frozen while blocked in the read gets the first queued report from
         // this very read.
         let now = clock();
-        let addr = self.conn.peer();
         let gap = now.saturating_sub(self.last_read);
         self.last_read = now;
         if gap > stale_gap {
             return Step::Drop {
-                addr,
                 reason: Disconnect::Stale { gap },
                 pause: false,
             };
         }
-        let fail = |reason| Step::Drop {
-            addr,
-            reason,
-            pause: true,
-        };
+        let fail = |reason| Step::Drop { reason, pause: true };
         match result {
             Ok(Line::Json(Report::Version(version))) if !self.banner_seen => {
                 self.banner_seen = true;
-                Step::Emit(Event::Connected { addr, version })
+                Step::Emit(Event::Connected(version))
             }
             Ok(_) if !self.banner_seen => fail(Disconnect::NoVersion),
             Ok(Line::Json(Report::Watch(echo))) if !(echo.enable && echo.json) => {
@@ -199,14 +173,14 @@ impl Open {
 
 impl Feed {
     pub(crate) fn new(
-        address: impl FnMut() -> Option<SocketAddr> + Send + 'static,
+        open: impl FnMut() -> io::Result<Box<dyn Stream>> + Send + 'static,
         watch: Watch,
         config: Config,
         stop: impl Fn() -> bool + Send + 'static,
         clock: impl Fn() -> Duration + Send + 'static,
     ) -> Feed {
         Feed {
-            address: Box::new(address),
+            open: Box::new(open),
             watch,
             config,
             stop: Box::new(stop),
@@ -231,16 +205,10 @@ impl Feed {
     }
 
     fn connect(&mut self) -> Option<Event> {
-        let Some(addr) = (self.address)() else {
-            self.state = State::Pause(self.config.bad_address_pause);
-            return Some(Event::NoAddress);
-        };
-        match Connection::connect(
-            addr,
-            &self.watch,
-            self.config.connect_timeout,
-            self.config.read_timeout,
-        ) {
+        let opened = (self.open)()
+            .map_err(ConnectError::Io)
+            .and_then(|stream| Connection::open(stream, &self.watch, self.config.read_timeout));
+        match opened {
             Ok(conn) => {
                 self.state = State::Connected(Open {
                     conn,
@@ -251,7 +219,7 @@ impl Feed {
             }
             Err(error) => {
                 self.state = State::Pause(self.config.reconnect_pause);
-                Some(Event::ConnectFailed { addr, error })
+                Some(Event::ConnectFailed(error))
             }
         }
     }
@@ -287,13 +255,13 @@ impl Iterator for Feed {
             match step {
                 Step::Continue => {}
                 Step::Emit(event) => return Some(event),
-                Step::Drop { addr, reason, pause } => {
+                Step::Drop { reason, pause } => {
                     self.state = if pause {
                         State::Pause(self.config.reconnect_pause)
                     } else {
                         State::Connect
                     };
-                    return Some(Event::Disconnected { addr, reason });
+                    return Some(Event::Disconnected(reason));
                 }
             }
         }
@@ -303,7 +271,6 @@ impl Iterator for Feed {
 #[cfg(test)]
 mod tests {
     use std::{
-        net::TcpListener,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc,
@@ -314,7 +281,7 @@ mod tests {
     use super::{
         super::{
             protocol::tests::samples::*,
-            tests::{line, FakeGpsd, Step},
+            tests::{line, tcp, FakeGpsd, Step},
         },
         *,
     };
@@ -322,12 +289,10 @@ mod tests {
     /// Short timeouts, so that the tests run in well under a second each.
     fn fast() -> Config {
         Config {
-            connect_timeout: Duration::from_secs(2),
             read_timeout: Duration::from_millis(100),
             stale_gap: Duration::from_secs(3),
             reconnect_pause: Duration::from_millis(100),
             pause_slice: Duration::from_millis(10),
-            bad_address_pause: Duration::from_millis(100),
         }
     }
 
@@ -344,14 +309,14 @@ mod tests {
 
     /// A feed with a clock the test moves and a stop flag the test sets.
     fn feed(
-        address: impl FnMut() -> Option<SocketAddr> + Send + 'static,
+        open: impl FnMut() -> io::Result<Box<dyn Stream>> + Send + 'static,
         config: Config,
     ) -> (Feed, Controls) {
         let clock = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (c, s) = (Arc::clone(&clock), Arc::clone(&stop));
         let feed = Feed::new(
-            address,
+            open,
             Watch::default(),
             config,
             move || s.load(Ordering::SeqCst),
@@ -389,24 +354,25 @@ mod tests {
         let mut second = handshake();
         second.extend([line(&tpv(3.0)), Step::WaitForClose]);
         let fake = FakeGpsd::start(vec![first, second]);
+        let addr = fake.addr;
         // A long pause, to show that a stale gap does not wait for it.
         let config = Config {
             reconnect_pause: Duration::from_secs(5),
             ..fast()
         };
-        let (mut feed, controls) = feed(move || Some(fake.addr), config);
+        let (mut feed, controls) = feed(move || tcp(addr), config);
 
-        assert!(matches!(feed.next(), Some(Event::Connected { .. })));
+        assert!(matches!(feed.next(), Some(Event::Connected(_))));
         assert_tpv(feed.next(), 1.0);
         // The second TPV is already in the socket when the thread stops reading for five seconds.
         controls.advance(Duration::from_secs(5));
         assert!(matches!(
             feed.next(),
-            Some(Event::Disconnected { reason: Disconnect::Stale { gap }, .. })
+            Some(Event::Disconnected(Disconnect::Stale { gap }))
                 if gap == Duration::from_secs(5)
         ));
         let before = Instant::now();
-        assert!(matches!(feed.next(), Some(Event::Connected { .. })));
+        assert!(matches!(feed.next(), Some(Event::Connected(_))));
         assert!(
             before.elapsed() < Duration::from_secs(1),
             "paused before reconnecting"
@@ -435,9 +401,9 @@ mod tests {
             read_timeout: Duration::from_secs(2),
             ..fast()
         };
-        let (mut feed, controls) = feed(move || Some(addr), config);
+        let (mut feed, controls) = feed(move || tcp(addr), config);
 
-        assert!(matches!(feed.next(), Some(Event::Connected { .. })));
+        assert!(matches!(feed.next(), Some(Event::Connected(_))));
         let clock = Arc::clone(&controls.clock);
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(200));
@@ -445,12 +411,9 @@ mod tests {
         });
         assert!(matches!(
             feed.next(),
-            Some(Event::Disconnected {
-                reason: Disconnect::Stale { .. },
-                ..
-            })
+            Some(Event::Disconnected(Disconnect::Stale { .. }))
         ));
-        assert!(matches!(feed.next(), Some(Event::Connected { .. })));
+        assert!(matches!(feed.next(), Some(Event::Connected(_))));
         assert_tpv(feed.next(), 3.0);
     }
 
@@ -460,9 +423,9 @@ mod tests {
         script.push(Step::WaitForClose);
         let fake = FakeGpsd::start(vec![script]);
         let addr = fake.addr;
-        let (mut feed, controls) = feed(move || Some(addr), fast());
+        let (mut feed, controls) = feed(move || tcp(addr), fast());
 
-        assert!(matches!(feed.next(), Some(Event::Connected { .. })));
+        assert!(matches!(feed.next(), Some(Event::Connected(_))));
         controls.stop.store(true, Ordering::SeqCst);
         let before = Instant::now();
         assert!(feed.next().is_none());
@@ -481,47 +444,41 @@ mod tests {
         let addr = fake.addr;
         let config = fast();
         let pause = config.reconnect_pause;
-        let (mut feed, _controls) = feed(move || Some(addr), config);
+        let (mut feed, _controls) = feed(move || tcp(addr), config);
 
-        assert!(matches!(feed.next(), Some(Event::Connected { .. })));
+        assert!(matches!(feed.next(), Some(Event::Connected(_))));
         assert!(matches!(
             feed.next(),
-            Some(Event::Disconnected {
-                reason: Disconnect::Closed,
-                ..
-            })
+            Some(Event::Disconnected(Disconnect::Closed))
         ));
         let before = Instant::now();
-        assert!(matches!(feed.next(), Some(Event::Connected { .. })));
+        assert!(matches!(feed.next(), Some(Event::Connected(_))));
         assert!(before.elapsed() >= pause, "reconnected without the pause");
         assert_tpv(feed.next(), 3.0);
     }
 
     #[test]
-    fn address_problems_are_reported_and_retried() {
+    fn connect_failures_are_reported_and_retried() {
         let mut script = handshake();
         script.push(Step::WaitForClose);
         let fake = FakeGpsd::start(vec![script]);
-        // A port nobody listens on: bind one and drop it.
-        let dead = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        let good = fake.addr;
+        let addr = fake.addr;
         let mut attempt = 0;
-        let address = move || {
+        let open = move || {
             attempt += 1;
-            match attempt {
-                1 => None,
-                2 => Some(dead),
-                _ => Some(good),
+            if attempt == 1 {
+                Err(io::ErrorKind::NotFound.into())
+            } else {
+                tcp(addr)
             }
         };
-        let (mut feed, _controls) = feed(address, fast());
+        let (mut feed, _controls) = feed(open, fast());
 
-        assert!(matches!(feed.next(), Some(Event::NoAddress)));
         assert!(matches!(
             feed.next(),
-            Some(Event::ConnectFailed { addr, error: ConnectError::Io(_) }) if addr == dead
+            Some(Event::ConnectFailed(ConnectError::Io(e))) if e.kind() == io::ErrorKind::NotFound
         ));
-        assert!(matches!(feed.next(), Some(Event::Connected { addr, .. }) if addr == good));
+        assert!(matches!(feed.next(), Some(Event::Connected(_))));
     }
 
     #[test]
@@ -535,23 +492,17 @@ mod tests {
         third.push(Step::WaitForClose);
         let fake = FakeGpsd::start(vec![first, second, third]);
         let addr = fake.addr;
-        let (mut feed, _controls) = feed(move || Some(addr), fast());
+        let (mut feed, _controls) = feed(move || tcp(addr), fast());
 
         assert!(matches!(
             feed.next(),
-            Some(Event::Disconnected {
-                reason: Disconnect::NoVersion,
-                ..
-            })
+            Some(Event::Disconnected(Disconnect::NoVersion))
         ));
-        assert!(matches!(feed.next(), Some(Event::Connected { .. })));
+        assert!(matches!(feed.next(), Some(Event::Connected(_))));
         assert!(matches!(
             feed.next(),
-            Some(Event::Disconnected {
-                reason: Disconnect::WatchRefused(_),
-                ..
-            })
+            Some(Event::Disconnected(Disconnect::WatchRefused(_)))
         ));
-        assert!(matches!(feed.next(), Some(Event::Connected { .. })));
+        assert!(matches!(feed.next(), Some(Event::Connected(_))));
     }
 }

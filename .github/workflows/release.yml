@@ -74,10 +74,12 @@ jobs:
           mkdir dist
           for triple in x86_64-linux-android aarch64-linux-android; do
             dir="gpsd-binder-$VERSION-$triple"
-            mkdir -p "dist/$dir/android" "dist/$dir/waydroid"
+            mkdir -p "dist/$dir/android/sepolicy" "dist/$dir/waydroid"
             install -m 0755 "target/$triple/release/gpsd-binder" \
               "dist/$dir/android.hardware.gnss-service.gpsd-binder"
-            install -m 0644 android/* "dist/$dir/android/"
+            install -m 0755 "target/$triple/release/gpsd-binder-relay" "dist/$dir/"
+            install -m 0644 android/*.rc android/*.xml "dist/$dir/android/"
+            install -m 0644 android/sepolicy/* "dist/$dir/android/sepolicy/"
             cp -p waydroid/* "dist/$dir/waydroid/"
             install -m 0644 LICENSE "dist/$dir/"
             tar -C dist --sort=name --owner=0 --group=0 --numeric-owner -czf "dist/$dir.tar.gz" "$dir"

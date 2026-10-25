@@ -1,0 +1,2 @@
+/vendor/bin/hw/android\.hardware\.gnss-service\.gpsd-binder  u:object_r:hal_gnss_gpsd_binder_exec:s0
+/vendor/bin/gpsd-binder-relay                                u:object_r:gpsd_binder_relay_exec:s0

@@ -26,8 +26,8 @@
 #                            gpsd is unreachable.
 # IPAddressAllow/Deny        Second fence (cgroup BPF): the unit may exchange
 #                            packets only with the bridge subnet and loopback.
-# ExecStartPre (modprobe)    Inside Android, a filter rule lets only uid 0 (the
-#                            driver) connect here; see gpsd-access-guard.sh in
+# ExecStartPre (modprobe)    Inside Android, a filter rule lets only uid gps
+#                            (1021, the relay) connect here; see gpsd-access-guard.sh in
 #                            the vendor overlay. That rule needs the legacy
 #                            iptables modules, and Android cannot load them
 #                            itself. They are loaded here, as root ("+"),

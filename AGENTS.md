@@ -26,10 +26,9 @@ Do not violate these. Ask the user before doing anything that comes close.
   Do not put Waydroid assumptions in `src/` or `android/`, and do not present
   the project as Waydroid-specific.
 - Target Android 13 (SDK 33) and later (LineageOS 20 or later with Waydroid).
-- The program must link only against LLNDK libraries, so that one build
-  serves several Android releases. Today its only `NEEDED` entries are
-  `libc.so` and `libdl.so`. `liblog.so` is also LLNDK and would be
-  acceptable.
+- Both programs must link only against LLNDK libraries, so that one build
+  serves several Android releases. Their only `NEEDED` entries are
+  `libc.so`, `libdl.so` and `liblog.so`.
 - The user prefers Rust.
 - Write in plain technical English. Do not invent jargon and do not
   anthropomorphize software. Match the comment density and idiom of the
@@ -42,7 +41,7 @@ for agents:
 
 - `just fmt`, `just vibecheck` and `just depcheck` must pass completely clean,
   with no warnings, before a change is presented. `just build` fails if the
-  binary needs any library other than `libc.so` and `libdl.so`.
+  programs need any library other than `libc.so`, `libdl.so` and `liblog.so`.
 - The check tools (`taplo`, `ast-grep`, `typos`, `cargo-deny`, `cargo-machete`) run
   through `cgx`, the user's own tool; their versions are in `cgx.toml`. Do not
   install them by hand or call them directly in the justfile. CI also runs
@@ -72,7 +71,8 @@ for agents:
   speaks only the Android 16 servicemanager protocol (see below). rsbinder and
   rsbinder-aidl do compile on macOS and Linux, which is what lets the unit
   tests and the verify build of `cargo package` run on the host.
-- arm64 (`just build arm64`) builds, but has not run on a device.
+- arm64 (`just build arm64`) has run in AOSP Android 13, 16 and 17
+  emulators with SELinux enforcing, but not on a physical device.
 - The NDK supplies only the linker, the C runtime start files, `libunwind.a`
   and the stub libraries; rustc compiles the code. The API level in the
   linker name (30), not the NDK version, sets the oldest Android release that
@@ -161,6 +161,10 @@ The relevant files are in `android_frameworks_base` under
 - Extensions: return an error status such as `UnsupportedOperation` from each
   `getExtension*()`. Returning success with no object makes the framework
   wrap the empty object, and it can crash later.
+- A location without a horizontal accuracy makes `LocationResult.validate()`
+  throw in system_server, and the whole framework restarts:
+  `Location.isComplete()` needs an accuracy, a time and an elapsed-realtime
+  timestamp. The driver drops gpsd fixes that have no `eph`.
 - `setCallback()` is called at boot (as an init and close cycle), when
   Location is turned on, on a user switch, for bypass requests such as
   emergency calls, and after the driver dies. The framework ignores its
@@ -209,8 +213,8 @@ The relevant files are in `android_frameworks_base` under
 
 ## rsbinder 0.12.0
 
-- It is pinned (`=0.12.0`, pre-1.0) with `default-features = false` (no
-  tokio) and the `android_13_plus` feature.
+- It uses `default-features = false` (no tokio) and the
+  `android_13_plus` feature.
 - Built for Android, it reads `ro.build.version.sdk` at run time and uses
   the matching servicemanager protocol, for SDK 33 to 37.
 - Built for any other target, it compiles only the Android 16 servicemanager
@@ -221,8 +225,14 @@ The relevant files are in `android_frameworks_base` under
   `getInterfaceVersion()` and uses AIDL only at version 2 or more.
 - `@VintfStability` in the AIDL makes rsbinder mark binder objects VINTF.
   Calls across the system and vendor boundary need that mark.
-- Cargo forbids dots in program names. The program is `gpsd-binder`; install
-  it as `/vendor/bin/hw/android.hardware.gnss-service.gpsd-binder`.
+- Cargo forbids dots in program names. The service is `gpsd-binder`; install
+  it as `/vendor/bin/hw/android.hardware.gnss-service.gpsd-binder`. Install
+  `gpsd-binder-relay` as `/vendor/bin/gpsd-binder-relay`. Both are required.
+  Their entry points are `src/bin/gpsd-binder.rs` and
+  `src/bin/gpsd-binder-relay.rs`. The service binary owns `RelayClient`,
+  which starts and reaps the relay; the relay binary owns TCP and byte
+  forwarding. `src/lib.rs` contains the GNSS core and shared logging. It
+  accepts an owned `Stream` without knowing about the relay.
 - The generated bindings trip `unreachable_pub`, `clippy::allow_attributes`
   and `clippy::unused_self` under this crate's lint set; `mod gen` in
   `src/hal.rs` expects exactly those. If a toolchain or rsbinder-aidl update
@@ -305,13 +315,49 @@ Mistakes made by earlier drivers fed from gpsd, to avoid:
 - extension getters that return success with no object;
 - clearing the callback on `stop()`, or never reconnecting.
 
+## Android emulator and SELinux
+
+- Android forbids `halserverdomain` any use of TCP sockets, including a
+  descriptor opened by another process. The GNSS service starts the relay
+  with a Unix socket as stdin; the relay connects to gpsd in its own domain.
+- `android/sepolicy/` defines `hal_gnss_gpsd_binder`, `gpsd_binder_relay`,
+  their executable labels, and `vendor_gpsd_binder_prop`. Properties are
+  read with `rsproperties`, not by executing the system `getprop` program.
+- On fresh AOSP AVDs, the policy can be installed as ODM CIL and contexts.
+  Move the vendor precompiled policy aside or init ignores the new CIL.
+  Never overwrite an existing device's ODM policy. Run
+  `android/sepolicy/check-policy.sh` on the image as root: init's own CIL
+  compilation disables neverallow checks.
+- Install policy and reboot before installing and labelling the programs.
+  Android 17 rejects a label whose type is not in the loaded policy. A
+  declared GNSS service that init cannot start can block Android boot.
+- Use `-writable-system -no-snapshot` on every emulator start; use `adb root`
+  and `adb remount` before changing vendor files. A first remount can require
+  a reboot. Reapply ownership, mode and `restorecon` after every push.
+- Disable both the emulator's ranchu GNSS init file and its VINTF fragment.
+  It is HIDL on Android 13 and AIDL on Android 16 and 17.
+- Android 17's local-network checks also cover native uid gps (1021).
+  Install `android/gpsd-binder-permissions.xml` under
+  `/system/etc/permissions/gpsd-binder.xml`, then reboot. Both `INTERNET`
+  and `ACCESS_LOCAL_NETWORK` must be assigned to gps: with neither, TCP
+  to the private host address times out without a denial; with only the
+  latter, connect returns `EPERM`. The inet group does not grant them.
+  Vendor permission files cannot assign native uid permissions, so this
+  file must be in system. Android 13 and 16 need no such file.
+- Emulator `10.0.2.2` reaches the host's loopback. An app must request a
+  location to start a session; do not use emulator location injection.
+- INSTALLING.md gives the tested two-phase procedure. The scratch paths in
+  android-emulator-testing.md are temporary, not installation dependencies.
+
 ## Waydroid (version 1.6.3, LineageOS 20 image)
 
 How the integration works: gpsd on the host listens on loopback;
 `waydroid/gpsd-waydroid-forward.service` relays connections from the bridge
 address 192.168.240.1:2947 to it; `waydroid/gpsd-binder-waydroid.rc` points
 the driver there; `waydroid/gpsd-access-guard.sh` resets connections to gpsd
-from every Android uid except 0.
+from every Android uid except gps (1021). Both programs now run as gps;
+this updated guard and two-program build have not been tested together on
+the CF-20.
 
 - Overlay: `/var/lib/waydroid/overlay` is mounted over the system image and
   `/var/lib/waydroid/overlay/vendor` over the vendor image, read-only, when a
@@ -342,7 +388,8 @@ from every Android uid except 0.
 - netd flushes its own child chains, `oem_out` included, when it starts, but
   keeps rules that others add directly to `OUTPUT`. The guard therefore keeps
   its own chain with one jump at the top of `OUTPUT`. It matches
-  `--uid-owner 1-4294967294`, not `! --uid-owner 0`: a negated match also
+  positive uid ranges `0-1020` and `1022-4294967294`, not
+  `! --uid-owner 1021`: a negated match also
   catches the ownerless packets the kernel sends after a socket closes, which
   left the forwarder's sockets retransmitting for minutes.
 - The guard needs the legacy iptables modules (`ip_tables`, `iptable_filter`,
@@ -370,8 +417,9 @@ Operating a Waydroid container from scripts:
 - During tests run `svc power stayon true` inside Android, and
   `svc power stayon false` as the last step.
 - Logs: `waydroid logcat -- -d -v time -b all` (the `--` is required).
-  Android init messages and anything a service writes with `stdio_to_kmsg`
-  appear in the host kernel log (`journalctl -k`).
+  The programs log through liblog with tags `gpsd-binder` and
+  `gpsd-binder-relay`. Android init messages still appear in the host
+  kernel log (`journalctl -k`).
 - Screenshots: `screencap -p /data/local/tmp/s.png` inside Android; the file
   appears on the host under `~/.local/share/waydroid/data/local/tmp/`. Delete
   it afterwards.
@@ -393,10 +441,10 @@ credentials. Never write credentials into the repository. SSH is by password
 (`sshpass -e` with `SSHPASS`); `sudo` takes the same password through
 `sudo -S -p ''`.
 
-- To install a new build: stop the session, copy the binary over
-  `/var/lib/waydroid/overlay/vendor/bin/hw/android.hardware.gnss-service.gpsd-binder`
-  (root-owned, 0755) and the init and VINTF files if they changed, and start
-  the session.
+- To install a new build: stop the session, copy both programs to their
+  paths under `/var/lib/waydroid/overlay/vendor/` (root-owned, 0755), update
+  the init and VINTF files and the access guard if changed, and start the
+  session. INSTALLING.md lists every file.
 - Without a sky view, replay a recording: run gpsfake on 127.0.0.1:2948 with
   a copy of the gpsd binary outside `/usr/bin` (see the SELinux note under
   gpsd), expose it with a temporary `socat` unit bound to `waydroid0`
@@ -422,9 +470,9 @@ credentials. Never write credentials into the repository. SSH is by password
 - Success looks like this: servicemanager logs "Found
   android.hardware.gnss.IGnss/default in device VINTF manifest"; `lshal` shows
   no HIDL GNSS service and `service list` shows
-  `android.hardware.gnss.IGnss/default`; the kernel log shows
-  `gpsd-binder: session N: connected to gpsd 3.27.5 at ...` and the device
-  list; `dumpsys location` shows the `gps` provider's request and last
+  `android.hardware.gnss.IGnss/default`; logcat shows the relay connecting
+  to the configured address, then the service reporting gpsd's version and
+  device list; `dumpsys location` shows the `gps` provider's request and last
   location and no mock or test provider; ATAK shows the position in its
   bottom-right readout.
 - Before ending: the port property back at 2947, the temporary unit and
@@ -435,6 +483,7 @@ credentials. Never write credentials into the repository. SSH is by password
   gpsd when the test forwarder goes away, recovery after an app force-stop,
   and recovery after the driver is killed with a request active. The build
   installed on 2026-10-25 was linked with NDK r30.
-- Not yet tested: a long run, freeze and thaw, gpsd restarts, arm64, Android
-  versions other than 13. The stale-gap logic is unit-tested with a fake
-  clock but not exercised by a real freeze.
+- Not yet tested: a long run, freeze and thaw, gpsd restarts, physical
+  arm64 devices, Android 14 and 15. Android 13, 16 and 17 have been tested
+  in arm64 emulators. The stale-gap logic is unit-tested with a fake clock
+  but not exercised by a real freeze.

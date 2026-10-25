@@ -1,12 +1,25 @@
 [package]
+categories   = ["hardware-support", "os::android-apis", "science::geo"]
 description  = "Android GNSS driver (AIDL android.hardware.gnss) backed by gpsd, in pure Rust over binder"
 edition      = "2021"
-license-file = "LICENSE"
+keywords     = ["android", "binder", "gnss", "gps", "gpsd"]
+license      = "GPL-3.0-or-later"
 name         = "gpsd-binder"
-publish      = false
+readme       = "README.md"
 repository   = "https://github.com/anelson/gpsd-binder"
 rust-version = "1.89"
 version      = "0.1.0"
+
+include = [
+  "/Cargo.lock",
+  "/Cargo.toml",
+  "/LICENSE",
+  "/README.md",
+  "/aidl/**",
+  "/android/**",
+  "/build.rs",
+  "/src/**",
+]
 
 [[bin]]
 # Cargo forbids dots in program names; install it as

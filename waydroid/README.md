@@ -17,14 +17,12 @@ gpsd-binder-relay in Android -> gpsd-binder -> Android's `gps` location provider
 
 ## Install
 
-1. Follow [Waydroid on Linux](../INSTALLING.md#waydroid-on-linux) to install
-   both programs and these Android files under
-   `/var/lib/waydroid/overlay/vendor/` on the host. Waydroid mounts that directory over `/vendor`. The files must be
-   owned by root, and the `.rc` files must not be group- or world-writable.
-2. Install the forwarder:
-   `systemctl daemon-reload; systemctl enable gpsd-waydroid-forward.service`.
-3. Restart the Waydroid session. Overlay changes take effect at the next
-   session start.
+Use the [Waydroid installer](../INSTALLING.md#waydroid-on-linux). It detects the Android
+architecture and bridge address, installs the files, and restarts the session. Run it as your
+desktop user with Waydroid running. From an unpacked release, use `sh waydroid/install-waydroid.sh`.
+
+For the individual file-copy commands, see
+[manual installation](../docs/manual-installation.md#waydroid-on-linux).
 
 ## Notes
 

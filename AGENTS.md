@@ -1,9 +1,22 @@
-# Notes for agents
+# Working with gpsd-binder
 
-This file is for agents who work on gpsd-binder. README.md says what the
-project is, BUILDING.md how to build it, and INSTALLING.md how to install it. This file records the
-requirements, the facts that cost effort to learn, and how to work on the
-code and on a test device.
+Project requirements and development guidance for people and agents working in this repository.
+[README.md](README.md) describes the driver; [BUILDING.md](BUILDING.md) covers building it.
+
+## Install and use
+
+You do not need to build the driver to use it. [INSTALLING.md](INSTALLING.md) gives the download
+and install commands:
+
+- [Waydroid on Linux](INSTALLING.md#waydroid-on-linux): run the Waydroid installer as your desktop
+  user. It installs the driver and host forwarder and restarts the session.
+- [Android emulator](INSTALLING.md#android-emulator): run the emulator installer with an AOSP AVD.
+  It handles policy installation, labels and reboots with SELinux enforcing.
+- [Manual installation](docs/manual-installation.md): file paths, diagnostics, recovery and
+  integration into other Android images.
+
+Enable Android Location and open an app that requests precise location, such as ATAK or GPSTest.
+The driver connects to gpsd only while an app requests location.
 
 ## Requirements
 

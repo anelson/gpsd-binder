@@ -44,9 +44,9 @@ the tests.
 
 ## Install
 
-Releases carry a ready-made build for x86_64 and arm64 Android.
-[INSTALLING.md](INSTALLING.md) describes how to install and configure it, on
-the Android emulator, Waydroid on Linux, and other Android devices.
+[INSTALLING.md](INSTALLING.md) has download-and-run installers for Waydroid on Linux and the
+Android emulator. They select the Android architecture, download a release, and install it.
+No build tools are needed. Manual steps and notes for other Android devices are kept separately.
 
 ## Integrations
 

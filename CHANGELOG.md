@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Download-and-run installers for Waydroid and AOSP emulator images. They select
+  the Android architecture, verify the release checksum and install the driver.
+  The emulator installer handles policy checks and reboots; the Waydroid installer
+  detects the bridge address and installs the forwarder and access guard.
 - SELinux policy for enforcing Android images, with separate domains for
   the GNSS service and its TCP relay, plus a neverallow check script.
 - Android emulator installation instructions, separate from the Waydroid

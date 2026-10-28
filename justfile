@@ -24,9 +24,13 @@ ast-grep:
 typos:
     cgx typos
 
+# Parse the host installers and Android shell scripts without running them.
+shell-syntax:
+    for script in android/*.sh android/sepolicy/*.sh waydroid/*.sh; do sh -n "$script"; done
+
 # Compile, clippy and doc checks, for the host (where the unit tests run) and for the Android targets.
 # This must be completely clean before a change is presented for review.
-vibecheck: ast-grep typos
+vibecheck: ast-grep typos shell-syntax
     cargo check --all-targets
     cargo clippy --all-targets -- -D warnings
     cargo check --target x86_64-linux-android

@@ -39,12 +39,9 @@ vibecheck: ast-grep typos shell-syntax
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
 # Security advisories, licences and duplicate versions (cargo-deny), unused dependencies (cargo-machete).
-# cargo-machete is run by crate name: as `cgx cargo machete` it takes the subcommand word for a path,
-# because cgx does not set the CARGO variable that cargo-machete uses to recognize that it was started
-# by cargo.
 depcheck:
     cgx cargo deny check
-    cgx cargo-machete --with-metadata
+    cgx cargo machete --with-metadata
 
 # The unit tests run on the host. The gpsd module's container test needs a Docker daemon.
 test:

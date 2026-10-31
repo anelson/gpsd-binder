@@ -48,7 +48,8 @@ jobs:
 
       - run: cgx just fmtcheck
       - run: cgx just vibecheck
-      - run: cgx just depcheck
+      - name: Check dependencies with cargo-deny and cargo-machete
+        run: cgx just depcheck
 
       # Builds the crate as crates.io would receive it, which proves that the include list in
       # Cargo.toml is complete.
